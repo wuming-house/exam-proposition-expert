@@ -726,6 +726,43 @@ def fill_inline(paragraph, text):
         pf.space_after = Pt(2)
 
 
+# 参考答案专用配色：答案=蓝、解析/知识点=绿
+COLOR_ANSWER = "1F4E79"    # 深蓝
+COLOR_ANALYSIS = "2E7D32"  # 深绿
+
+
+def _color_paragraph(paragraph, hex_color):
+    """给段落内所有文字上色（含公式 m:r 内的文字）。"""
+    try:
+        from docx.shared import RGBColor
+        for r in paragraph.runs:
+            r.font.color.rgb = RGBColor.from_string(hex_color)
+    except Exception:
+        pass
+    # 公式内 <m:r> 上色（OMML 用 m:color）
+    try:
+        for mr in paragraph._p.iter(qn("m:r")):
+            rpr = mr.find(qn("m:rPr"))
+            if rpr is None:
+                rpr = OxmlElement("m:rPr")
+                mr.insert(0, rpr)
+            col = rpr.find(qn("m:color"))
+            if col is None:
+                col = OxmlElement("m:color")
+                rpr.append(col)
+            col.set(qn("m:val"), hex_color)
+    except Exception:
+        pass
+
+
+def fill_colored_line(doc, text, hex_color):
+    """添加一行文本并整体着色（用于参考答案的答案/解析行）。"""
+    p = doc.add_paragraph()
+    fill_inline(p, text)
+    _color_paragraph(p, hex_color)
+    return p
+
+
 def is_table_start(lines, i):
     if "|" not in lines[i]:
         return False
@@ -854,6 +891,17 @@ def build_docx(md_text, md_dir, seamless, no_page_number):
                 remove_table_borders(tbl)
                 # 强制等宽：每列宽度 = 页面可用宽度 / 列数
                 _set_equal_column_widths(tbl, cols)
+        elif (strip.startswith("【答案】") or re.match(r"^答案[：:]", strip)
+              or strip.startswith("**答案**")):
+            # 参考答案：答案行（蓝色），写在题目下方
+            fill_colored_line(doc, line, COLOR_ANSWER)
+            i += 1
+        elif (strip.startswith("【解析】") or strip.startswith("【知识点】")
+              or strip.startswith("【思路】")
+              or re.match(r"^(解析|知识点|思路)[：:]", strip)):
+            # 参考答案：解析/知识点行（绿色），写在答案下方
+            fill_colored_line(doc, line, COLOR_ANALYSIS)
+            i += 1
         elif re.match(r"^\d+\.\s", strip) or strip.startswith("- ") or strip.startswith("* "):
             # 列表
             items = []
