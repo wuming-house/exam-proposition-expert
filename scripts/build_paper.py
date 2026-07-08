@@ -283,6 +283,19 @@ def _e_arg(mm_elem):
     return e
 
 
+def _unwrap_e(elem):
+    """若 elem 是 <m:e>，返回其子元素列表（拆包）；否则返回 [elem]。
+
+    用于 msup/msub 等的 base 参数：_convert(mrow) 会返回 <m:e>，
+    而外层 handler 又创建了 base=<m:e>，导致双层嵌套。
+    此函数消除多余的一层。
+    """
+    M_NS = "http://schemas.openxmlformats.org/officeDocument/2006/math"
+    if elem is not None and localname(elem.tag) == "e":
+        return list(elem)
+    return [elem]
+
+
 def _e_from(child):
     """把【单个】MathML 元素转成 <m:e> 包裹的 OMML。
 
@@ -351,7 +364,8 @@ def _convert(elem):
         base = m("e")
         exp = m("sup")
         if len(kids) >= 1:
-            base.append(_convert(kids[0]))
+            for child in _unwrap_e(_convert(kids[0])):
+                base.append(child)
         if len(kids) >= 2:
             exp.append(_convert(kids[1]))
         _add_script_sz(exp)  # 上标用更小字号
@@ -363,7 +377,8 @@ def _convert(elem):
         base = m("e")
         sub = m("sub")
         if len(kids) >= 1:
-            base.append(_convert(kids[0]))
+            for child in _unwrap_e(_convert(kids[0])):
+                base.append(child)
         if len(kids) >= 2:
             sub.append(_convert(kids[1]))
         _add_script_sz(sub)  # 下标用更小字号
@@ -376,7 +391,8 @@ def _convert(elem):
         sub = m("sub")
         sup = m("sup")
         if len(kids) >= 1:
-            base.append(_convert(kids[0]))
+            for child in _unwrap_e(_convert(kids[0])):
+                base.append(child)
         if len(kids) >= 2:
             sub.append(_convert(kids[1]))
             _add_script_sz(sub)  # 下标用更小字号
