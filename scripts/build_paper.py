@@ -360,9 +360,9 @@ def _convert(elem):
         rad.append(e)
         return rad
     if ln == "msup":
-        wrap = m("sup")
+        wrap = m("sSup")       # 上标函数容器（不是 m:sup！）
         base = m("e")
-        exp = m("sup")
+        exp = m("sup")         # 上标内容
         if len(kids) >= 1:
             for child in _unwrap_e(_convert(kids[0])):
                 base.append(child)
@@ -373,9 +373,9 @@ def _convert(elem):
         wrap.append(exp)
         return wrap
     if ln == "msub":
-        wrap = m("sub")
+        wrap = m("sSub")       # 下标函数容器（不是 m:sub！）
         base = m("e")
-        sub = m("sub")
+        sub = m("sub")         # 下标内容
         if len(kids) >= 1:
             for child in _unwrap_e(_convert(kids[0])):
                 base.append(child)
