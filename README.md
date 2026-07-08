@@ -60,26 +60,12 @@ cp -r exam-proposition-expert .cursor/skills/
 
 重启/刷新对话后，对助手说「帮我出一份 XX 学科的试卷」即可触发。
 
-### 方式二：让 AI 智能体自动安装（推荐给非 WorkBuddy 用户）
+### 方式二：让 AI 智能体自动安装
 
-如果你正在使用**另一个** AI 助手（Claude、ChatGPT、Codex、通义灵码、Copilot、Gemini 等），**只需把下面这段提示词原样发给它**，它会自动帮你克隆仓库、放到正确的 skills 目录、并装好依赖——你不用手动敲任何命令：
+如果你正在使用AI 助手（WorkBuddy、Claude、ChatGPT、Codex、通义灵码、Copilot、Gemini 等），**只需把下面这段提示词原样发给它**，它会自动帮你克隆仓库、放到正确的 skills 目录、并装好依赖——你不用手动敲任何命令：
 
 ```
-请帮我把「命题专家 Exam Proposition Expert」这个 Skill 安装到你的技能目录，并配置好运行依赖。
-
-- 仓库地址：https://github.com/wuming-house/exam-proposition-expert
-- 请按以下步骤完成：
-  1. 克隆仓库：git clone https://github.com/wuming-house/exam-proposition-expert.git
-     （若克隆失败，改用网页下载 ZIP 并解压，得到 exam-proposition-expert/ 文件夹）
-  2. 找到你所在 AI 助手的「用户级 skills 目录」，把整个 exam-proposition-expert/ 文件夹复制进去：
-     - WorkBuddy：~/.workbuddy/skills/
-     - Claude Code：~/.claude/skills/
-     - Cursor：项目内 .cursor/skills/ 或用户级 skills 目录
-     - 其它任何支持 SKILL.md 格式的框架：放到该框架约定的 skills 目录下
-  3. 安装 Python 依赖：pip install python-docx latex2mathml matplotlib
-  4. 安装完成后，告诉我已就绪，并说明在你这个环境里如何触发它
-     （例如对我说「帮我出一份试卷」或「用命题专家 Skill 出数学卷」）。
-- 注意：复制后请确认 SKILL.md 在 exam-proposition-expert/ 根目录内、scripts/ 子目录与之一起就位。
+帮我安装这个Skill：https://github.com/wuming-house/exam-proposition-expert
 ```
 
 > 这段提示词是**框架无关**的——任何能读写文件、执行命令的 AI 助手读完都能自行完成安装，无需你了解各框架的目录约定。
@@ -159,3 +145,10 @@ pip install python-docx latex2mathml matplotlib
 ## 致谢
 
 流程设计参考中小学及升学考试的真实命题规范（双向细目表、依标命题、审题分离、保密管理等）。
+
+---
+
+**Created by 吾鳴**
+- 微信公众号：**蕪鳴**
+- 微信：**wu_ming_2025**
+- Built for 老师|家长 · Made with ❤️
