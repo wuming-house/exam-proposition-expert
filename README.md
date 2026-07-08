@@ -1,8 +1,10 @@
 # 命题专家 · Exam Proposition Expert
 
-一个面向 [WorkBuddy](https://www.codebuddy.cn/) 的命题技能（Skill）。它以一位「从事教育行业 50 年、刚退休的命题教授」的身份，按学校真实的试卷命题流程，以**「命题人 / 审题人」双角色独立把关**，友好地采集考试信息，并生成**可直接打印的 Word 试卷（.docx）**。
+一个**跨平台、可被任意 AI 智能体复用**的命题技能（Skill）。它以一位「从事教育行业 50 年、刚退休的命题教授」的身份，按学校真实的试卷命题流程，以**「命题人 / 审题人」双角色独立把关**，友好地采集考试信息，并生成**可直接打印的 Word 试卷（.docx）**。
 
 核心保证：**试卷里的公式会转成 Word 原生可编辑方程（不是图片，绝不会乱码），配图正确嵌入**；且**未经审题人独立审查通过，绝不输出最终试卷**。
+
+本技能遵循通用的 `SKILL.md` 规范编写，**不绑定任何单一产品**：不仅能在 WorkBuddy 中运行，也兼容 Claude Code、Cursor、Codex、通义灵码等任何支持 `SKILL.md` 的 AI 智能体框架——换句话说，**任何会读文件、能执行命令的 AI 助手都能把它装来用**。
 
 ---
 
@@ -38,19 +40,57 @@ exam-proposition-expert/
 
 ---
 
-## 安装到 WorkBuddy
+## 安装
 
-把整个 `exam-proposition-expert/` 文件夹复制到 WorkBuddy 的用户级技能目录：
+### 方式一：手动安装
+
+把整个 `exam-proposition-expert/` 文件夹复制到所用 AI 助手的「用户级 skills 目录」。不同框架的路径略有差异：
 
 ```bash
-# Windows（PowerShell）
+# WorkBuddy（Windows PowerShell）
 Copy-Item -Recurse exam-proposition-expert "$env:USERPROFILE\.workbuddy\skills\"
 
-# macOS / Linux
+# WorkBuddy / Claude Code / 其它（macOS / Linux）
 cp -r exam-proposition-expert ~/.workbuddy/skills/
+# Claude Code 用户请将目标目录换成 ~/.claude/skills/
+
+# Cursor（项目级）
+cp -r exam-proposition-expert .cursor/skills/
 ```
 
-重启/刷新 WorkBuddy 对话后，对助手说「帮我出一份 XX 学科的试卷」即可触发。
+重启/刷新对话后，对助手说「帮我出一份 XX 学科的试卷」即可触发。
+
+### 方式二：让 AI 智能体自动安装（推荐给非 WorkBuddy 用户）
+
+如果你正在使用**另一个** AI 助手（Claude、ChatGPT、Codex、通义灵码、Copilot、Gemini 等），**只需把下面这段提示词原样发给它**，它会自动帮你克隆仓库、放到正确的 skills 目录、并装好依赖——你不用手动敲任何命令：
+
+```
+请帮我把「命题专家 Exam Proposition Expert」这个 Skill 安装到你的技能目录，并配置好运行依赖。
+
+- 仓库地址：https://github.com/wuming-house/exam-proposition-expert
+- 请按以下步骤完成：
+  1. 克隆仓库：git clone https://github.com/wuming-house/exam-proposition-expert.git
+     （若克隆失败，改用网页下载 ZIP 并解压，得到 exam-proposition-expert/ 文件夹）
+  2. 找到你所在 AI 助手的「用户级 skills 目录」，把整个 exam-proposition-expert/ 文件夹复制进去：
+     - WorkBuddy：~/.workbuddy/skills/
+     - Claude Code：~/.claude/skills/
+     - Cursor：项目内 .cursor/skills/ 或用户级 skills 目录
+     - 其它任何支持 SKILL.md 格式的框架：放到该框架约定的 skills 目录下
+  3. 安装 Python 依赖：pip install python-docx latex2mathml matplotlib
+  4. 安装完成后，告诉我已就绪，并说明在你这个环境里如何触发它
+     （例如对我说「帮我出一份试卷」或「用命题专家 Skill 出数学卷」）。
+- 注意：复制后请确认 SKILL.md 在 exam-proposition-expert/ 根目录内、scripts/ 子目录与之一起就位。
+```
+
+> 这段提示词是**框架无关**的——任何能读写文件、执行命令的 AI 助手读完都能自行完成安装，无需你了解各框架的目录约定。
+
+### 运行依赖
+
+生成引擎 `build_paper.py` 需要 Python 3 与以下库（无论哪个框架，装好后都一样）：
+
+```bash
+pip install python-docx latex2mathml matplotlib
+```
 
 ---
 
