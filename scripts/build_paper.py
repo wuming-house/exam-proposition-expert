@@ -1,0 +1,704 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+build_paper.py — 命题专家技能配套脚本（自包含，无需 pandoc）
+
+把按约定写好的 Markdown 试卷（含 LaTeX 公式与图片引用）转换为
+可直接打印的 Word 试卷（.docx）。
+
+原理：
+  1. 轻量 Markdown 解析器把试卷拆成标题/段落/列表/表格/图片/公式块。
+  2. LaTeX 公式经 latex2mathml 转 MathML，再转成 Word 原生可编辑方程（OMML），
+     因此公式是 Word 里能编辑的方程，而不是图片，绝不会乱。
+  3. 图片用 python-docx 直接嵌入。
+  4. 后处理统一中文字体、A4 页面、页边距、页码，可选左侧"密封线"。
+
+依赖：python-docx、latex2mathml（可选 matplotlib 用于生成配图）。
+用法：
+  python build_paper.py paper.md -o 试卷.docx [--seamless] [--no-page-number]
+"""
+
+import argparse
+import os
+import re
+import sys
+import xml.etree.ElementTree as ET
+
+from docx import Document
+from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.oxml.ns import qn
+from docx.oxml import OxmlElement
+from docx.shared import Pt, Cm, Mm, Emu
+
+try:
+    from latex2mathml.converter import convert as latex_to_mathml
+except Exception as e:  # pragma: no cover
+    sys.exit(f"[错误] 未安装 latex2mathml：请先 `pip install latex2mathml`。\n({e})")
+
+# 注册命名空间，确保序列化时使用标准前缀（m:/wp:/a:/wps:），
+# 否则 lxml 会生成 ns0 等前缀，虽然 Word 仍能识别，但统一前缀更稳妥。
+try:
+    from lxml import etree as _lxml_etree
+    for _p, _u in {
+        "m": "http://schemas.openxmlformats.org/officeDocument/2006/math",
+        "wp": "http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing",
+        "a": "http://schemas.openxmlformats.org/drawingml/2006/main",
+        "wps": "http://schemas.microsoft.com/office/word/2010/wordprocessingShape",
+        "wpg": "http://schemas.microsoft.com/office/word/2010/wordprocessingGroup",
+    }.items():
+        _lxml_etree.register_namespace(_p, _u)
+except Exception:
+    pass
+
+# 中文字体方案（标准中文试卷排版）
+BODY_ASCII = "Times New Roman"
+BODY_EA = "宋体"
+HEAD_EA = "黑体"
+TITLE_SIZE = Pt(16)
+SECTION_SIZE = Pt(13)
+SUBSECTION_SIZE = Pt(11.5)
+BODY_SIZE = Pt(10.5)
+
+
+# ----------------------------------------------------------------------------
+# 工具：命名空间
+# ----------------------------------------------------------------------------
+def m(local):
+    """创建 OMML(math) 命名空间元素。"""
+    return OxmlElement(f"m:{local}")
+
+
+def localname(tag):
+    if not isinstance(tag, str):
+        return None
+    return tag.split("}", 1)[1] if "}" in tag else tag
+
+
+# ----------------------------------------------------------------------------
+# LaTeX -> Word 原生方程（OMML）
+# ----------------------------------------------------------------------------
+def latex_to_omath(latex):
+    """把一段 LaTeX 转成 <m:oMath> 元素；失败则退化为纯文本。"""
+    try:
+        mathml = latex_to_mathml(latex)
+        root = ET.fromstring(mathml)
+        return mathml_to_omath(root)
+    except Exception as e:
+        sys.stderr.write(f"[提示] 公式转换失败，已退化为文本：{latex} ({e})\n")
+        o = m("oMath")
+        r = m("r")
+        t = m("t")
+        t.text = latex
+        r.append(t)
+        o.append(r)
+        return o
+
+
+def _children_e(parent_omml, mm_parent):
+    """把 MathML 子节点转换后追加进 OMML 父节点（mrow/mstyle 直接展开）。"""
+    for child in list(mm_parent):
+        ln = localname(child.tag)
+        if ln is None:
+            continue
+        if ln in ("mrow", "mstyle"):
+            _children_e(parent_omml, child)
+        elif ln in ("mphantom",):
+            # 占位符：忽略内容
+            continue
+        else:
+            parent_omml.append(_convert(child))
+
+
+def mathml_to_omath(math_root):
+    omath = m("oMath")
+    # math_root 可能是 <math> 或已是表达式
+    _children_e(omath, math_root)
+    return omath
+
+
+def _make_run(elem):
+    ln = localname(elem.tag)
+    text = "".join(elem.itertext())
+    r = m("r")
+    sty_val = None
+    mv = elem.get("mathvariant")
+    if mv:
+        sty_val = {"italic": "i", "bold": "b", "bold-italic": "bi",
+                   "normal": "p", "double-struck": "p", "script": "p"}.get(mv)
+    else:
+        if ln == "mi":
+            sty_val = "i"
+        elif ln == "mtext":
+            sty_val = "p"
+    if sty_val:
+        rpr = m("rPr")
+        sty = m("sty")
+        sty.set(qn("m:val"), sty_val)
+        rpr.append(sty)
+        r.append(rpr)
+    t = m("t")
+    t.set(qn("xml:space"), "preserve")
+    t.text = text
+    r.append(t)
+    return r
+
+
+def _e_arg(mm_elem):
+    """生成 m:e 参数节点（用于分组 / 作为 f、sup 等的参数）。"""
+    e = m("e")
+    _children_e(e, mm_elem)
+    return e
+
+
+def _convert(elem):
+    ln = localname(elem.tag)
+    kids = [c for c in list(elem) if localname(c.tag) is not None]
+
+    if ln in ("mi", "mn", "mo", "mtext"):
+        return _make_run(elem)
+    if ln == "mspace":
+        r = m("r")
+        t = m("t")
+        t.set(qn("xml:space"), "preserve")
+        t.text = " "
+        r.append(t)
+        return r
+    if ln in ("mrow", "mstyle"):
+        return _e_arg(elem)
+    if ln == "mfrac":
+        f = m("f")
+        f.append(m("fPr"))
+        num = m("num")
+        den = m("den")
+        if len(kids) >= 2:
+            _children_e(num, kids[0])
+            _children_e(den, kids[1])
+        f.append(num)
+        f.append(den)
+        return f
+    if ln == "msqrt":
+        rad = m("rad")
+        rad.append(m("radPr"))
+        deg = m("deg")
+        rad.append(deg)
+        e = m("e")
+        if kids:
+            _children_e(e, kids[0])
+        rad.append(e)
+        return rad
+    if ln == "mroot":
+        rad = m("rad")
+        rad.append(m("radPr"))
+        deg = m("deg")
+        e = m("e")
+        if len(kids) >= 2:
+            _children_e(deg, kids[1])
+            _children_e(e, kids[0])
+        rad.append(deg)
+        rad.append(e)
+        return rad
+    if ln == "msup":
+        wrap = m("sup")
+        base = m("e")
+        exp = m("sup")
+        if len(kids) >= 2:
+            _children_e(base, kids[0])
+            _children_e(exp, kids[1])
+        wrap.append(base)
+        wrap.append(exp)
+        return wrap
+    if ln == "msub":
+        wrap = m("sub")
+        base = m("e")
+        sub = m("sub")
+        if len(kids) >= 2:
+            _children_e(base, kids[0])
+            _children_e(sub, kids[1])
+        wrap.append(base)
+        wrap.append(sub)
+        return wrap
+    if ln == "msubsup":
+        wrap = m("subSup")
+        base = m("e")
+        sub = m("sub")
+        sup = m("sup")
+        if len(kids) >= 3:
+            _children_e(base, kids[0])
+            _children_e(sub, kids[1])
+            _children_e(sup, kids[2])
+        wrap.append(base)
+        wrap.append(sub)
+        wrap.append(sup)
+        return wrap
+    if ln == "mfenced":
+        d = m("d")
+        dpr = m("dPr")
+        beg = m("begChr")
+        beg.set(qn("m:val"), elem.get("open", "(") or "(")
+        end = m("endChr")
+        end.set(qn("m:val"), elem.get("close", ")") or ")")
+        dpr.append(beg)
+        dpr.append(end)
+        d.append(dpr)
+        e = m("e")
+        for c in kids:
+            e.append(_convert(c))
+        d.append(e)
+        return d
+    if ln == "mtable":
+        tbl = m("m")
+        tbl.append(m("mPr"))
+        for row in kids:
+            if localname(row.tag) != "mtr":
+                continue
+            mr = m("mr")
+            cells = [c for c in list(row) if localname(c.tag) == "mtd"]
+            for cell in cells:
+                e = m("e")
+                _children_e(e, cell)
+                mr.append(e)
+            tbl.append(mr)
+        return tbl
+    if ln in ("mover", "munder"):
+        acc = m("acc")
+        accpr = m("accPr")
+        # 取 mo 作为重音符号
+        mo_text = ""
+        for c in kids:
+            if localname(c.tag) == "mo":
+                mo_text = "".join(c.itertext())
+                break
+        chr_el = m("chr")
+        chr_el.set(qn("m:val"), mo_text or "^")
+        accpr.append(chr_el)
+        acc.append(accpr)
+        base = m("e")
+        if kids:
+            _children_e(base, kids[0])
+        acc.append(base)
+        return acc
+    if ln == "mphantom":
+        # 占位：返回空 e
+        return m("e")
+    # 兜底：当作分组
+    return _e_arg(elem)
+
+
+# ----------------------------------------------------------------------------
+# 中文字体 / 排版
+# ----------------------------------------------------------------------------
+def set_run_fonts(run, ascii_font, ea_font, size=None):
+    run.font.name = ascii_font
+    if size is not None:
+        run.font.size = size
+    rpr = run._element.get_or_add_rPr()
+    rfonts = rpr.find(qn("w:rFonts"))
+    if rfonts is None:
+        rfonts = OxmlElement("w:rFonts")
+        rpr.append(rfonts)
+    rfonts.set(qn("w:ascii"), ascii_font)
+    rfonts.set(qn("w:hAnsi"), ascii_font)
+    rfonts.set(qn("w:eastAsia"), ea_font)
+    rfonts.set(qn("w:cs"), ascii_font)
+
+
+def set_style_font(style, ascii_font, ea_font, size=None, bold=None, align=None):
+    try:
+        rpr = style.element.get_or_add_rPr()
+    except Exception:
+        return
+    rfonts = rpr.find(qn("w:rFonts"))
+    if rfonts is None:
+        rfonts = OxmlElement("w:rFonts")
+        rpr.append(rfonts)
+    rfonts.set(qn("w:ascii"), ascii_font)
+    rfonts.set(qn("w:hAnsi"), ascii_font)
+    rfonts.set(qn("w:eastAsia"), ea_font)
+    rfonts.set(qn("w:cs"), ascii_font)
+    if size is not None:
+        style.font.size = size
+    if bold is not None:
+        style.font.bold = bold
+    if align is not None:
+        style.paragraph_format.alignment = align
+
+
+def style_document(doc):
+    for style in doc.styles:
+        try:
+            set_style_font(style, BODY_ASCII, BODY_EA)
+        except Exception:
+            pass
+    names = [s.name for s in doc.styles]
+    if "Normal" in names:
+        set_style_font(doc.styles["Normal"], BODY_ASCII, BODY_EA, size=BODY_SIZE)
+    if "Heading 1" in names:
+        set_style_font(doc.styles["Heading 1"], BODY_ASCII, HEAD_EA,
+                       size=TITLE_SIZE, bold=True, align=WD_ALIGN_PARAGRAPH.CENTER)
+    if "Heading 2" in names:
+        set_style_font(doc.styles["Heading 2"], BODY_ASCII, HEAD_EA,
+                       size=SECTION_SIZE, bold=True)
+    if "Heading 3" in names:
+        set_style_font(doc.styles["Heading 3"], BODY_ASCII, HEAD_EA,
+                       size=SUBSECTION_SIZE, bold=True)
+    # 正文 run 补中文
+    for p in doc.paragraphs:
+        for r in p.runs:
+            if r._element.find(qn("m:oMath")) is not None:
+                continue
+            set_run_fonts(r, BODY_ASCII, BODY_EA)
+    for tbl in doc.tables:
+        for row in tbl.rows:
+            for cell in row.cells:
+                for p in cell.paragraphs:
+                    for r in p.runs:
+                        set_run_fonts(r, BODY_ASCII, BODY_EA)
+
+
+def set_page_setup(doc):
+    for section in doc.sections:
+        section.page_width = Mm(210)
+        section.page_height = Mm(297)
+        section.top_margin = Cm(2.5)
+        section.bottom_margin = Cm(2.5)
+        section.left_margin = Cm(2.5)
+        section.right_margin = Cm(2.5)
+
+
+def add_field(paragraph, field):
+    b = OxmlElement("w:fldChar")
+    b.set(qn("w:fldCharType"), "begin")
+    instr = OxmlElement("w:instrText")
+    instr.set(qn("xml:space"), "preserve")
+    instr.text = f" {field} "
+    sep = OxmlElement("w:fldChar")
+    sep.set(qn("w:fldCharType"), "separate")
+    end = OxmlElement("w:fldChar")
+    end.set(qn("w:fldCharType"), "end")
+    r = paragraph.add_run()
+    r._r.append(b)
+    r._r.append(instr)
+    r._r.append(sep)
+    r._r.append(end)
+
+
+def add_page_number_footer(doc):
+    section = doc.sections[0]
+    footer = section.footer
+    p = footer.paragraphs[0] if footer.paragraphs else footer.add_paragraph()
+    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    r0 = p.add_run("第 ")
+    set_run_fonts(r0, BODY_ASCII, BODY_EA, Pt(9))
+    add_field(p, "PAGE")
+    r1 = p.add_run(" 页 / 共 ")
+    set_run_fonts(r1, BODY_ASCII, BODY_EA, Pt(9))
+    add_field(p, "NUMPAGES")
+    r2 = p.add_run(" 页")
+    set_run_fonts(r2, BODY_ASCII, BODY_EA, Pt(9))
+
+
+def add_seam_line(doc):
+    try:
+        from docx.oxml.ns import nsmap
+        nsmap.setdefault("wps",
+            "http://schemas.microsoft.com/office/word/2010/wordprocessingShape")
+        nsmap.setdefault("wpg",
+            "http://schemas.microsoft.com/office/word/2010/wordprocessingGroup")
+        nsmap.setdefault("wpc",
+            "http://schemas.openxmlformats.org/drawingml/2006/wordprocessingCanvas")
+
+        section = doc.sections[0]
+        header = section.header
+        hp = header.paragraphs[0] if header.paragraphs else header.add_paragraph()
+
+        pos_left = Emu(int(Cm(0.4)))
+        pos_top = Emu(int(Cm(105)))
+        box_w = Emu(int(Cm(0.8)))
+        box_h = Emu(int(Cm(85)))
+
+        anchor = OxmlElement("wp:anchor")
+        for k, v in {
+            "distT": "0", "distB": "0", "distL": "0", "distR": "0",
+            "simplePos": "0", "relativeHeight": "251658240",
+            "behindDoc": "1", "locked": "0", "layoutInCell": "1",
+            "allowOverlap": "1",
+        }.items():
+            anchor.set(qn("wp:" + k), v)
+        sp = OxmlElement("wp:simplePos")
+        sp.set(qn("wp:x"), "0")
+        sp.set(qn("wp:y"), "0")
+        anchor.append(sp)
+        ph = OxmlElement("wp:positionH")
+        ph.set(qn("wp:relativeFrom"), "page")
+        ph_off = OxmlElement("wp:posOffset")
+        ph_off.text = str(int(pos_left))
+        ph.append(ph_off)
+        anchor.append(ph)
+        pv = OxmlElement("wp:positionV")
+        pv.set(qn("wp:relativeFrom"), "page")
+        pv_off = OxmlElement("wp:posOffset")
+        pv_off.text = str(int(pos_top))
+        pv.append(pv_off)
+        anchor.append(pv)
+        ext = OxmlElement("wp:extent")
+        ext.set(qn("wp:cx"), str(int(box_w)))
+        ext.set(qn("wp:cy"), str(int(box_h)))
+        anchor.append(ext)
+        eff = OxmlElement("wp:effectExtent")
+        for k, v in {"l": "0", "t": "0", "r": "0", "b": "0"}.items():
+            eff.set(qn("wp:" + k), v)
+        anchor.append(eff)
+        anchor.append(OxmlElement("wp:wrapNone"))
+        docpr = OxmlElement("wp:docPr")
+        docpr.set(qn("wp:id"), "99")
+        docpr.set(qn("wp:name"), "SeamLine")
+        anchor.append(docpr)
+        anchor.append(OxmlElement("wp:cNvGraphicFramePr"))
+
+        graphic = OxmlElement("a:graphic")
+        gdata = OxmlElement("a:graphicData")
+        gdata.set(qn("a:uri"),
+                  "http://schemas.microsoft.com/office/word/2010/wordprocessingShape")
+        wsp = OxmlElement("wps:wsp")
+        txbx = OxmlElement("wps:txbx")
+        content = OxmlElement("w:txbxContent")
+        para = OxmlElement("w:p")
+        ppr = OxmlElement("w:pPr")
+        td = OxmlElement("w:textDirection")
+        td.set(qn("w:val"), "tbRl")
+        ppr.append(td)
+        para.append(ppr)
+        r = OxmlElement("w:r")
+        rpr = OxmlElement("w:rPr")
+        rfonts = OxmlElement("w:rFonts")
+        rfonts.set(qn("w:eastAsia"), "宋体")
+        rpr.append(rfonts)
+        sz = OxmlElement("w:sz")
+        sz.set(qn("w:val"), "24")
+        rpr.append(sz)
+        color = OxmlElement("w:color")
+        color.set(qn("w:val"), "808080")
+        rpr.append(color)
+        r.append(rpr)
+        t = OxmlElement("w:t")
+        t.set(qn("xml:space"), "preserve")
+        t.text = "密 封 线"
+        r.append(t)
+        para.append(r)
+        content.append(para)
+        txbx.append(content)
+        wsp.append(txbx)
+        gdata.append(wsp)
+        graphic.append(gdata)
+        anchor.append(graphic)
+
+        drawing = OxmlElement("w:drawing")
+        drawing.append(anchor)
+        run = hp.add_run()
+        run._r.append(drawing)
+    except Exception as e:
+        sys.stderr.write(f"[提示] 密封线插入失败，已跳过（不影响试卷主体）：{e}\n")
+
+
+# ----------------------------------------------------------------------------
+# 轻量 Markdown 解析 -> docx
+# ----------------------------------------------------------------------------
+INLINE_RE = re.compile(r"\$([^$]+)\$|(\*\*[^*]+\*\*)")
+
+
+def tokenize_inline(s):
+    tokens = []
+    pos = 0
+    for mm in INLINE_RE.finditer(s):
+        if mm.start() > pos:
+            tokens.append(("text", s[pos:mm.start()]))
+        if mm.group(1) is not None:
+            tokens.append(("math", mm.group(1)))
+        else:
+            tokens.append(("bold", mm.group(2)[2:-2]))
+        pos = mm.end()
+    if pos < len(s):
+        tokens.append(("text", s[pos:]))
+    return tokens
+
+
+def fill_inline(paragraph, text):
+    for kind, val in tokenize_inline(text):
+        if kind == "text":
+            if val == "":
+                continue
+            r = paragraph.add_run(val)
+            set_run_fonts(r, BODY_ASCII, BODY_EA)
+        elif kind == "bold":
+            r = paragraph.add_run(val)
+            r.bold = True
+            set_run_fonts(r, BODY_ASCII, BODY_EA)
+        else:  # math
+            r = paragraph.add_run()
+            r._r.append(latex_to_omath(val))
+
+
+def is_table_start(lines, i):
+    if "|" not in lines[i]:
+        return False
+    nxt = lines[i + 1].strip() if i + 1 < len(lines) else ""
+    return bool(re.match(r"^\s*\|?[\s:\-|]+\|?\s*$", nxt)) and "-" in nxt
+
+
+def remove_table_borders(tbl):
+    tblPr = tbl._tbl.tblPr
+    borders = OxmlElement("w:tblBorders")
+    for edge in ("top", "left", "bottom", "right", "insideH", "insideV"):
+        e = OxmlElement(f"w:{edge}")
+        e.set(qn("w:val"), "none")
+        e.set(qn("w:sz"), "0")
+        e.set(qn("w:space"), "0")
+        e.set(qn("w:color"), "auto")
+        borders.append(e)
+    tblPr.append(borders)
+
+
+def build_docx(md_text, md_dir, seamless, no_page_number):
+    doc = Document()
+    lines = md_text.split("\n")
+    n = len(lines)
+    i = 0
+    while i < n:
+        line = lines[i]
+        strip = line.strip()
+        if strip == "":
+            i += 1
+            continue
+        if strip.startswith("#"):
+            level = len(strip) - len(strip.lstrip("#"))
+            title = strip[level:].strip()
+            doc.add_heading(title, level=min(level, 3))
+            i += 1
+        elif strip in ("---", "***", "___"):
+            p = doc.add_paragraph()
+            pPr = p._p.get_or_add_pPr()
+            pBdr = OxmlElement("w:pBdr")
+            bottom = OxmlElement("w:bottom")
+            bottom.set(qn("w:val"), "single")
+            bottom.set(qn("w:sz"), "6")
+            bottom.set(qn("w:space"), "1")
+            bottom.set(qn("w:color"), "999999")
+            pBdr.append(bottom)
+            pPr.append(pBdr)
+            i += 1
+        elif re.match(r"^!\[[^\]]*\]\([^)]+\)$", strip):
+            m = re.match(r"^!\[[^\]]*\]\(([^)]+)\)$", strip)
+            path = m.group(1).strip()
+            if not os.path.isabs(path):
+                path = os.path.join(md_dir, path)
+            if os.path.isfile(path):
+                p = doc.add_paragraph()
+                p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                try:
+                    p.add_run().add_picture(path, width=Cm(9))
+                except Exception:
+                    p.add_run(f"[图片缺失: {path}]")
+            else:
+                p = doc.add_paragraph()
+                p.add_run(f"[图片缺失: {path}]")
+                set_run_fonts(p.runs[0], BODY_ASCII, BODY_EA)
+            i += 1
+        elif strip.startswith("$$") and strip.endswith("$$"):
+            latex = strip[2:-2].strip()
+            p = doc.add_paragraph()
+            p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            op = OxmlElement("m:oMathPara")
+            op.append(latex_to_omath(latex))
+            p._p.append(op)
+            i += 1
+        elif is_table_start(lines, i):
+            # 解析表格
+            header = [c.strip() for c in strip.strip().strip("|").split("|")]
+            i += 2  # 跳过分隔行
+            body = []
+            while i < n and "|" in lines[i] and lines[i].strip():
+                row = [c.strip() for c in lines[i].strip().strip("|").split("|")]
+                body.append(row)
+                i += 1
+            cols = max(len(header), *(len(r) for r in body), 1)
+            tbl = doc.add_table(rows=1, cols=cols)
+            try:
+                tbl.style = "Table Grid"
+            except Exception:
+                pass
+            # 表头
+            for c in range(cols):
+                cell = tbl.rows[0].cells[c]
+                cell.text = ""
+                fill_inline(cell.paragraphs[0], header[c] if c < len(header) else "")
+            for r in body:
+                cells = tbl.add_row().cells
+                for c in range(cols):
+                    cells[c].text = ""
+                    fill_inline(cells[c].paragraphs[0], r[c] if c < len(r) else "")
+            # 考生信息栏（含下划线填空）去边框
+            joined = " ".join(header + [x for r in body for x in r])
+            if "____" in joined:
+                remove_table_borders(tbl)
+        elif re.match(r"^\d+\.\s", strip) or strip.startswith("- ") or strip.startswith("* "):
+            # 列表
+            items = []
+            while i < n and lines[i].strip():
+                s = lines[i].strip()
+                mm = re.match(r"^(\d+\.)\s+(.*)$", s)
+                if mm:
+                    items.append(("num", mm.group(2)))
+                    i += 1
+                elif s.startswith("- ") or s.startswith("* "):
+                    items.append(("bul", s[2:]))
+                    i += 1
+                else:
+                    break
+            for kind, content in items:
+                style = "List Number" if kind == "num" else "List Bullet"
+                try:
+                    p = doc.add_paragraph(style=style)
+                except Exception:
+                    p = doc.add_paragraph()
+                fill_inline(p, content)
+        else:
+            p = doc.add_paragraph()
+            fill_inline(p, line)
+            i += 1
+
+    style_document(doc)
+    set_page_setup(doc)
+    if not no_page_number:
+        add_page_number_footer(doc)
+    if seamless:
+        add_seam_line(doc)
+    return doc
+
+
+def main():
+    ap = argparse.ArgumentParser(description="Markdown 试卷 -> 可打印 docx（自包含）")
+    ap.add_argument("input", help="输入的 paper.md 路径")
+    ap.add_argument("-o", "--output", required=True, help="输出 docx 路径")
+    ap.add_argument("--seamless", action="store_true", help="添加左侧竖排'密封线'")
+    ap.add_argument("--no-page-number", action="store_true", help="不加页码")
+    args = ap.parse_args()
+
+    if not os.path.isfile(args.input):
+        sys.exit(f"[错误] 找不到输入文件：{args.input}")
+
+    with open(args.input, "r", encoding="utf-8") as f:
+        md_text = f.read()
+
+    print("[1/3] 解析 Markdown 并转换公式为 Word 原生方程...")
+    doc = build_docx(md_text, os.path.dirname(os.path.abspath(args.input)),
+                     args.seamless, args.no_page_number)
+
+    out_dir = os.path.dirname(os.path.abspath(args.output))
+    os.makedirs(out_dir, exist_ok=True)
+    print("[2/3] 统一中文排版 / A4 / 页码...")
+    doc.save(args.output)
+    print(f"[3/3] 完成 -> {args.output}")
+
+
+if __name__ == "__main__":
+    main()
