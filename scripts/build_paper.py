@@ -714,12 +714,16 @@ def fill_inline(paragraph, text):
             # 不能放进 <w:r> 内部，否则 Word 不识别、渲染为空白。
             has_math = True
             paragraph._p.append(latex_to_omath(val))
-    # 包含内联公式的段落：强制设置行距，防止上标/度数符号顶部被截断。
-    # 使用较大的 atLeast 值（约 1.9x 正文号），确保上标/角度符号完整显示。
+    # 包含内联公式的段落：强制设置行距 + 段前/段后间距，
+    # 防止上标/度数符号（超出基线以上的部分）被行高顶部裁掉。
+    # 原理：Word 的 atLeast 行距通常把富余空间加在基线下方，
+    # 而上标/度数符号的溢出在基线*上方*，故额外加 spaceBefore 给顶部留白。
     if has_math:
         pf = paragraph.paragraph_format
         pf.line_spacing_rule = WD_LINE_SPACING.AT_LEAST
-        pf.line_spacing = Pt(20)
+        pf.line_spacing = Pt(22)
+        pf.space_before = Pt(3)
+        pf.space_after = Pt(2)
 
 
 def is_table_start(lines, i):
