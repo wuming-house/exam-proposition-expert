@@ -22,6 +22,7 @@ import argparse
 import os
 import re
 import sys
+from lxml import etree as lxml_et
 import xml.etree.ElementTree as ET
 
 from docx import Document
@@ -93,15 +94,100 @@ def _fix_degree_symbol(omath):
     return omath
 
 
+# MathML 结构规整化
+# ----------------------------------------------------------------------------
+_CLOSING = {")": "(", "]": "[", "}": "{", "\u27e9": "\u27e8",
+            "\u2309": "\u2308", "\u230b": "\u230a"}  # 右→左 括号映射
+
+_MATH = "http://www.w3.org/1998/Math/MathML"
+
+
+def _normalize_mathml(math_elem):
+    """规整 latex2mathml 输出的畸形 MathML 结构。
+
+    已知问题：latex2mathml 对 ``(-2)^3`` 生成
+      <mrow><mo>(</mo><mo>−</mo><mn>2</mn>
+        <msup><mo>)</mo><mn>3</mn></msup></mrow>
+    即右括号被塞进 msup 底数、其余内容散落在 mrow 中。
+    正确结构应为整个 (-2) 作为 msup 底数。
+
+    本函数扫描 msup/msub/msubsup，若底数为右括号类字符则向前回溯
+    匹配的左括号，将中间所有元素包裹进 <mrow> 作为新底数。
+    """
+    import copy
+
+    for tag in ("msup", "msub", "msubsup"):
+        for node in math_elem.iter(f"{{{_MATH}}}{tag}"):
+            children = list(node)
+            if not children:
+                continue
+            base = children[0]  # msup/msub: base; msubsup: base
+            base_text = (base.text or "").strip()
+            # 检查底数是否是单个右括号类字符
+            if base_text not in _CLOSING and len(list(base)) == 0:
+                # 也检查只有文本子节点的 mo 元素
+                t_nodes = list(base.iter(f"{{{_MATH}}}t"))
+                if not t_nodes or (t_nodes[0].text or "").strip() not in _CLOSING:
+                    continue
+                base_text = (t_nodes[0].text or "").strip()
+
+            opening = _CLOSING.get(base_text)
+            if opening is None:
+                continue
+
+            parent = node.getparent()
+            if parent is None:
+                continue
+            siblings = list(parent)
+
+            # 找 node 在 siblings 中的位置和匹配的左括号
+            idx = siblings.index(node)
+            match_idx = None
+            depth = 0
+            # 从 node 前面向后找（跳过嵌套的同类型标签）
+            for i in range(idx - 1, -1, -1):
+                sib = siblings[i]
+                sib_tag = localname(sib.tag)
+                sib_txt = "".join(sib.itertext()).strip()
+                if sib_tag == tag:
+                    depth += 1
+                elif depth > 0 and (sib_tag == "mrow" and any(localname(c.tag) == tag for c in sib)):
+                    depth -= 1
+                elif depth == 0 and sib_txt == opening:
+                    match_idx = i
+                    break
+
+            if match_idx is None:
+                continue
+
+            # 把 siblings[match_idx .. idx-1] + 原底数包进 <mrow> 当新底数
+            new_base = lxml_et.Element(f"{{{_MATH}}}mrow")
+            for i in range(match_idx, idx):
+                new_base.append(copy.deepcopy(siblings[i]))
+            new_base.append(copy.deepcopy(base))  # deepcopy！lxml.append会移动元素
+
+            # 替换底数
+            node.remove(base)
+            node.insert(0, new_base)
+
+            # 删除原位置上被吸进去的兄弟节点（从后往前删避免索引漂移）
+            for i in range(idx - 1, match_idx - 1, -1):
+                parent.remove(siblings[i])
+
+    return math_elem
+
+
 # LaTeX -> Word 原生方程（OMML）
 # ----------------------------------------------------------------------------
 def latex_to_omath(latex):
     """把一段 LaTeX 转成 <m:oMath> 元素；失败则退化为纯文本。"""
     try:
         mathml = latex_to_mathml(latex)
-        root = ET.fromstring(mathml)
+        # 用 lxml 解析（支持 .getparent()，规整化需要）
+        root = lxml_et.fromstring(mathml.encode("utf-8"))
+        _normalize_mathml(root)   # 修复 latex2mathml 的畸形结构
         omath = mathml_to_omath(root)
-        return _fix_degree_symbol(omath)
+        return _fix_degree_symbol(omath)  # 度数符号标准化
     except Exception as e:
         sys.stderr.write(f"[提示] 公式转换失败，已退化为文本：{latex} ({e})\n")
         o = m("oMath")
