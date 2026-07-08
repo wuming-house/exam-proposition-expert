@@ -746,6 +746,30 @@ def remove_table_borders(tbl):
     tblPr.append(borders)
 
 
+def _set_equal_column_widths(tbl, cols):
+    """设置表格所有列为等宽（基于页面可用宽度）。"""
+    try:
+        # 获取/创建 tblGrid
+        tbl_grid = tbl._tbl.find(qn("w:tblGrid"))
+        if tbl_grid is None:
+            tbl_grid = OxmlElement("w:tblGrid")
+            tbl._tbl.insert(0, tbl_grid)
+        else:
+            tbl_grid.clear()
+        # 页面可用宽度 = 页宽 - 左边距 - 右边距
+        page_width_emu = int(Mm(210))  # A4 页宽
+        left_margin_emu = int(Cm(2.5))
+        right_margin_emu = int(Cm(2.5))
+        available = page_width_emu - left_margin_emu - right_margin_emu
+        col_width = available // max(cols, 1)
+        for _ in range(cols):
+            gc = OxmlElement("w:gridCol")
+            gc.set(qn("w:w"), str(col_width))
+            tbl_grid.append(gc)
+    except Exception as e:
+        sys.stderr.write(f"[提示] 表格等宽设置失败，已跳过：{e}\n")
+
+
 def build_docx(md_text, md_dir, seamless, no_page_number):
     doc = Document()
     lines = md_text.split("\n")
@@ -824,10 +848,12 @@ def build_docx(md_text, md_dir, seamless, no_page_number):
                 for c in range(cols):
                     cells[c].text = ""
                     fill_inline(cells[c].paragraphs[0], r[c] if c < len(r) else "")
-            # 考生信息栏（含下划线填空）去边框
+            # 考生信息栏（含下划线填空）去边框 + 等宽列
             joined = " ".join(header + [x for r in body for x in r])
             if "____" in joined:
                 remove_table_borders(tbl)
+                # 强制等宽：每列宽度 = 页面可用宽度 / 列数
+                _set_equal_column_widths(tbl, cols)
         elif re.match(r"^\d+\.\s", strip) or strip.startswith("- ") or strip.startswith("* "):
             # 列表
             items = []
