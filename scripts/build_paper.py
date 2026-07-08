@@ -116,7 +116,30 @@ def mathml_to_omath(math_root):
     return omath
 
 
-def _make_run(elem):
+# OOXML m:sz 值：2 = smaller（上标/下标标准大小）
+SCRIPT_SZ_VAL = "2"
+
+
+def _add_script_sz(omml_elem):
+    """给 OMML 元素内所有 <m:r> 添加 <m:sz m:val="2"/>（更小字号），
+    用于上标/下标内容，使其在 Word 中以正确的较小尺寸渲染。"""
+    M_NS = "http://schemas.openxmlformats.org/officeDocument/2006/math"
+    for r in omml_elem.iter(f"{{{M_NS}}}r"):
+        # 如果已有 rPr，追加 sz；否则新建
+        rpr = r.find(f"{{{M_NS}}}rPr")
+        if rpr is None:
+            rpr = m("rPr")
+            # 把 rpr 插到第一个子元素前（保持 r 内顺序：rPr 在前，t 在后）
+            if len(r):
+                r.insert(0, rpr)
+            else:
+                r.append(rpr)
+        sz = m("sz")
+        sz.set(qn("m:val"), SCRIPT_SZ_VAL)
+        rpr.append(sz)
+
+
+def _make_run(elem, script_size=False):
     ln = localname(elem.tag)
     text = "".join(elem.itertext())
     r = m("r")
@@ -130,11 +153,16 @@ def _make_run(elem):
             sty_val = "i"
         elif ln == "mtext":
             sty_val = "p"
-    if sty_val:
+    if sty_val or script_size:
         rpr = m("rPr")
-        sty = m("sty")
-        sty.set(qn("m:val"), sty_val)
-        rpr.append(sty)
+        if sty_val:
+            sty = m("sty")
+            sty.set(qn("m:val"), sty_val)
+            rpr.append(sty)
+        if script_size:
+            sz = m("sz")
+            sz.set(qn("m:val"), SCRIPT_SZ_VAL)
+            rpr.append(sz)
         r.append(rpr)
     t = m("t")
     t.set(qn("xml:space"), "preserve")
@@ -147,6 +175,18 @@ def _e_arg(mm_elem):
     """生成 m:e 参数节点（用于分组 / 作为 f、sup 等的参数）。"""
     e = m("e")
     _children_e(e, mm_elem)
+    return e
+
+
+def _e_from(child):
+    """把【单个】MathML 元素转成 <m:e> 包裹的 OMML。
+
+    正确处理叶子（mn/mi/mo）与容器（mrow/mfrac/msup 等）：
+      _children_e 期望传入「容器」并迭代其 children，若传入叶子（无 children）
+      则什么都不填 —— 这正是之前上标/分数/根号内容丢失的根因。
+    """
+    e = m("e")
+    e.append(_convert(child))
     return e
 
 
@@ -170,9 +210,12 @@ def _convert(elem):
         f.append(m("fPr"))
         num = m("num")
         den = m("den")
+        if len(kids) >= 1:
+            num.append(_e_from(kids[0]))
+            _add_script_sz(num)
         if len(kids) >= 2:
-            _children_e(num, kids[0])
-            _children_e(den, kids[1])
+            den.append(_e_from(kids[1]))
+            _add_script_sz(den)
         f.append(num)
         f.append(den)
         return f
@@ -183,7 +226,7 @@ def _convert(elem):
         rad.append(deg)
         e = m("e")
         if kids:
-            _children_e(e, kids[0])
+            e.append(_convert(kids[0]))
         rad.append(e)
         return rad
     if ln == "mroot":
@@ -192,8 +235,9 @@ def _convert(elem):
         deg = m("deg")
         e = m("e")
         if len(kids) >= 2:
-            _children_e(deg, kids[1])
-            _children_e(e, kids[0])
+            deg.append(_convert(kids[1]))
+            _add_script_sz(deg)  # 根指数用更小字号
+            e.append(_convert(kids[0]))
         rad.append(deg)
         rad.append(e)
         return rad
@@ -201,9 +245,11 @@ def _convert(elem):
         wrap = m("sup")
         base = m("e")
         exp = m("sup")
+        if len(kids) >= 1:
+            base.append(_convert(kids[0]))
         if len(kids) >= 2:
-            _children_e(base, kids[0])
-            _children_e(exp, kids[1])
+            exp.append(_convert(kids[1]))
+        _add_script_sz(exp)  # 上标用更小字号
         wrap.append(base)
         wrap.append(exp)
         return wrap
@@ -211,9 +257,11 @@ def _convert(elem):
         wrap = m("sub")
         base = m("e")
         sub = m("sub")
+        if len(kids) >= 1:
+            base.append(_convert(kids[0]))
         if len(kids) >= 2:
-            _children_e(base, kids[0])
-            _children_e(sub, kids[1])
+            sub.append(_convert(kids[1]))
+        _add_script_sz(sub)  # 下标用更小字号
         wrap.append(base)
         wrap.append(sub)
         return wrap
@@ -222,10 +270,14 @@ def _convert(elem):
         base = m("e")
         sub = m("sub")
         sup = m("sup")
+        if len(kids) >= 1:
+            base.append(_convert(kids[0]))
+        if len(kids) >= 2:
+            sub.append(_convert(kids[1]))
+            _add_script_sz(sub)  # 下标用更小字号
         if len(kids) >= 3:
-            _children_e(base, kids[0])
-            _children_e(sub, kids[1])
-            _children_e(sup, kids[2])
+            sup.append(_convert(kids[2]))
+            _add_script_sz(sup)  # 上标用更小字号
         wrap.append(base)
         wrap.append(sub)
         wrap.append(sup)
@@ -274,8 +326,10 @@ def _convert(elem):
         acc.append(accpr)
         base = m("e")
         if kids:
-            _children_e(base, kids[0])
+            base.append(_convert(kids[0]))
         acc.append(base)
+        # mover 的符号（如度数圈）也用更小字号
+        _add_script_sz(acc)
         return acc
     if ln == "mphantom":
         # 占位：返回空 e
@@ -533,9 +587,10 @@ def fill_inline(paragraph, text):
             r = paragraph.add_run(val)
             r.bold = True
             set_run_fonts(r, BODY_ASCII, BODY_EA)
-        else:  # math
-            r = paragraph.add_run()
-            r._r.append(latex_to_omath(val))
+        else:  # math —— 行内公式
+            # 关键修复：<m:oMath> 必须是 <w:p> 的直接子元素，
+            # 不能放进 <w:r> 内部，否则 Word 不识别、渲染为空白。
+            paragraph._p.append(latex_to_omath(val))
 
 
 def is_table_start(lines, i):
