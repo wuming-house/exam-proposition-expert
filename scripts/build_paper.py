@@ -26,7 +26,7 @@ from lxml import etree as lxml_et
 import xml.etree.ElementTree as ET
 
 from docx import Document
-from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_LINE_SPACING
 from docx.oxml.ns import qn
 from docx.oxml import OxmlElement
 from docx.shared import Pt, Cm, Mm, Emu
@@ -698,6 +698,7 @@ def tokenize_inline(s):
 
 
 def fill_inline(paragraph, text):
+    has_math = False
     for kind, val in tokenize_inline(text):
         if kind == "text":
             if val == "":
@@ -711,7 +712,14 @@ def fill_inline(paragraph, text):
         else:  # math —— 行内公式
             # 关键修复：<m:oMath> 必须是 <w:p> 的直接子元素，
             # 不能放进 <w:r> 内部，否则 Word 不识别、渲染为空白。
+            has_math = True
             paragraph._p.append(latex_to_omath(val))
+    # 包含内联公式的段落：设置行距为"至少"，防止上标/度数符号被行高截断
+    if has_math:
+        pf = paragraph.paragraph_format
+        if pf.line_spacing_rule is None or pf.line_spacing_rule == WD_LINE_SPACING.SINGLE:
+            pf.line_spacing_rule = WD_LINE_SPACING.AT_LEAST
+            pf.line_spacing = Pt(16)
 
 
 def is_table_start(lines, i):
