@@ -75,6 +75,24 @@ def localname(tag):
 
 
 # ----------------------------------------------------------------------------
+def _fix_degree_symbol(omath):
+    """后处理：把上标/重音中的 ∘(U+2218 RING OPERATOR) 替换为 °(U+00B0 DEGREE SIGN)。
+
+    LaTeX 的 \\circ 在数学排版中产生 U+2218（环运算符），
+    但「角度/度数」场景下应该用 U+00B0（度符号）。
+    U+2218 在非 Word 环境（IMA/WPS/LibreOffice 等）中常被渲染为
+    大圆圈或附带多余字符，而 U+00B0 是通用标准字符，跨平台一致。
+    """
+    M_NS = "http://schemas.openxmlformats.org/officeDocument/2006/math"
+    RING = "\u2218"   # ∘  RING OPERATOR
+    DEGREE = "\u00b0" # °  DEGREE SIGN
+
+    for t in omath.iter(f"{{{M_NS}}}t"):
+        if t.text and RING in t.text:
+            t.text = t.text.replace(RING, DEGREE)
+    return omath
+
+
 # LaTeX -> Word 原生方程（OMML）
 # ----------------------------------------------------------------------------
 def latex_to_omath(latex):
@@ -82,7 +100,8 @@ def latex_to_omath(latex):
     try:
         mathml = latex_to_mathml(latex)
         root = ET.fromstring(mathml)
-        return mathml_to_omath(root)
+        omath = mathml_to_omath(root)
+        return _fix_degree_symbol(omath)
     except Exception as e:
         sys.stderr.write(f"[提示] 公式转换失败，已退化为文本：{latex} ({e})\n")
         o = m("oMath")

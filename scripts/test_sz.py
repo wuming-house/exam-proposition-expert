@@ -32,7 +32,7 @@ def count_sz(elem):
 
 
 tests = [
-    (r"90^\circ", "角度符号(mover→acc)", 1),
+    (r"90^\circ", "角度符号(msup→°)", 1),
     (r"(-2)^3", "上标(msup)", 1),
     (r"x^2", "简单上标(msup)", 1),
     (r"x_1", "下标(msub)", 1),
@@ -49,12 +49,21 @@ for latex, desc, min_sz in tests:
     if not ok:
         all_ok = False
     texts = "".join(t.text or "" for t in om.iter(f"{{{M}}}t"))
+    # 额外检查：角度符号必须用 °(U+00B0) 而非 ∘(U+2218)
+    has_bad_ring = "\u2218" in texts
+    has_good_degree = "\u00b0" in texts
+    if "角度" in desc and has_bad_ring:
+        ok = False
+        all_ok = False
     status = "✅" if ok else "❌"
-    print(f"{status} [sz={sz_count:2d} val_ok={val_ok}] {desc:20s} | '{texts}'")
+    ring_info = ""
+    if "角度" in desc:
+        ring_info = f" | ∘(bad)={has_bad_ring} °(good)={has_good_degree}"
+    print(f"{status} [sz={sz_count:2d} val_ok={val_ok}{ring_info}] {desc:20s} | '{texts}'")
 
 print()
 if all_ok:
-    print("✅ 全部通过：上标/下标/分数/角度符号均添加了更小字号属性(m:sz=\"2\")")
+    print("✅ 全部通过：上标/下标/分数/角度符号均添加了更小字号属性(m:sz=\"2\")，度数使用标准°符号")
 else:
-    print("❌ 部分公式缺少 m:sz 属性")
+    print("❌ 部分公式缺少 m:sz 属性或使用了错误的度数字符")
     sys.exit(1)
