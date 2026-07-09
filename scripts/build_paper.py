@@ -1425,7 +1425,11 @@ def _insert_colored_after(paragraph, text, hex_color):
 
 
 def parse_answers(answer_text):
-    """解析参考答案文本，返回 {题号: (答案文本, 解析文本)}。
+    """解析参考答案文本，按文档出现顺序返回 [(答案文本, 解析文本), ...]。
+
+    ⚠️ 不再用"题号"作键——因为选择题/填空题/解答题的题号在各题型内都从 1 开始，
+    旧版直接以题号作 dict 键会相互覆盖（这正是"答案丢失+错位/一半试卷一半答案"的根因）。
+    改为返回有序列表，再由调用方结合"题型分区计划 parse_sections"按区配对。
 
     支持格式：
       1. **C** — 解析内容
@@ -1435,9 +1439,9 @@ def parse_answers(answer_text):
       多题一行：10. **B**  11. **C**  12. **B**
       表格答案：| 题号 | 1 | 2 | ... | 答案 | C | C | ...
     """
-    answers = {}
+    entries = []
     if not answer_text or not answer_text.strip():
-        return answers
+        return entries
 
     lines = answer_text.split("\n")
     i = 0
@@ -1470,13 +1474,8 @@ def parse_answers(answer_text):
                         continue
                     first = cells[0]
                     if first in ("答案", "答案解析", "参考答案"):
-                        for idx, val in enumerate(cells[1:], start=1):
-                            if idx < len(header):
-                                try:
-                                    qnum = int(header[idx])
-                                    answers[qnum] = (val, "")
-                                except ValueError:
-                                    pass
+                        for val in cells[1:]:
+                            entries.append((val, ""))
             continue
 
         # 处理一行多题：10. **B**  11. **C**  12. **B**
@@ -1485,9 +1484,7 @@ def parse_answers(answer_text):
         pairs = list(re.finditer(r"(\d+)\.\s*\*\*(.+?)\*\*", line))
         if len(pairs) >= 2:
             for m in pairs:
-                qnum = int(m.group(1))
-                ans = m.group(2).strip()
-                answers[qnum] = (ans, "")
+                entries.append((m.group(2).strip(), ""))
             i += 1
             continue
 
@@ -1497,7 +1494,6 @@ def parse_answers(answer_text):
             i += 1
             continue
 
-        qnum = int(m.group(1))
         rest = m.group(2).strip()
 
         ans_match = re.match(r"^\*\*(.+?)\*\*\s*(.*)$", rest)
@@ -1532,9 +1528,96 @@ def parse_answers(answer_text):
             analysis += ("\n" + nxt) if analysis else nxt
             i += 1
 
-        answers[qnum] = (ans, analysis)
+        entries.append((ans, analysis))
 
-    return answers
+    return entries
+
+
+def parse_sections(question_text):
+    """从题干文本中解析"题型分区计划"，返回 [(题型标题, 该题型题目数), ...]。
+
+    题干里 选择题/填空题/解答题 的题号都在各题型内从 1 开始；
+    这里只数每个 '## 题型' 下的 '数字. ' 列表项个数，作为与参考答案配对的分区计划。
+    （注意事项等非题型区的 '1. 2.' 不计，因为那时 cur_title 仍为 None。）
+    """
+    sections = []
+    cur_title = None
+    cur_count = 0
+    for line in question_text.split("\n"):
+        s = line.strip()
+        m = re.match(r"^##\s+(.+)$", s)
+        if m:
+            if cur_title is not None:
+                sections.append((cur_title, cur_count))
+            cur_title = m.group(1).strip()
+            cur_count = 0
+            continue
+        if cur_title is not None and re.match(r"^\d+\.\s", s):
+            cur_count += 1
+    if cur_title is not None:
+        sections.append((cur_title, cur_count))
+    return sections
+
+
+def build_answer_key(sections, answers_list, md_text, md_dir,
+                     seamless=False, no_page_number=False):
+    """生成"纯答案卷"：只按题型分区列出 题号 +【答案】+ 解析，不重复试卷题目。
+
+    彻底规避旧版"答案丢失+错位"的根因（题号跨题型碰撞）：
+    先由 parse_sections 得到分区计划（如 选择10/填空6/解答9），
+    再按该计划把 parse_answers 的有序答案列表依次分配进各题型，
+    渲染为 蓝色【答案】+ 绿色【解析/思路/步骤/知识点/易错】多段讲解。
+    """
+    doc = Document()
+
+    # 大标题（取自试卷 H1），并标注"参考答案"
+    title = ""
+    for line in md_text.split("\n"):
+        mt = re.match(r"^#\s+(.+)$", line.strip())
+        if mt:
+            title = mt.group(1).strip()
+            break
+    if title:
+        doc.add_heading(f"{title}（参考答案）", level=1)
+    else:
+        doc.add_heading("参考答案与评分标准", level=1)
+
+    idx = 0
+    total = len(answers_list)
+    for sec_title, count in sections:
+        doc.add_heading(sec_title, level=2)
+        for local in range(1, count + 1):
+            if idx >= total:
+                # 参考答案少于题目数：补齐占位，避免静默漏题
+                p = doc.add_paragraph()
+                r = p.add_run(f"{local}. 【答案】（缺少参考答案）")
+                set_run_fonts(r, BODY_ASCII, BODY_EA)
+                _color_paragraph(p, COLOR_ANSWER)
+                continue
+            ans, analysis = answers_list[idx]
+            idx += 1
+            # 答案行（蓝色）。fill_inline 会正确渲染其中 $...$ 公式（含根号→图片）。
+            p = doc.add_paragraph()
+            fill_inline(p, f"{local}. 【答案】{ans}")
+            _color_paragraph(p, COLOR_ANSWER)
+            # 解析行（绿色，按原换行拆成多段，像老师板书分层讲解）
+            if analysis:
+                for sub in analysis.split("\n"):
+                    sub = sub.strip()
+                    if not sub:
+                        continue
+                    prefix = "" if sub.startswith("【") else "【解析】"
+                    pp = doc.add_paragraph()
+                    fill_inline(pp, f"{prefix}{sub}")
+                    _color_paragraph(pp, COLOR_ANALYSIS)
+
+    style_document(doc)
+    set_page_setup(doc)
+    if not no_page_number:
+        add_page_number_footer(doc)
+    if seamless:
+        add_seam_line(doc)
+    return doc
 
 
 def is_table_start(lines, i):
@@ -1853,12 +1936,14 @@ def main():
     question_text = md_text[:split_idx]
     answer_text = md_text[split_idx:]
 
-    # 解析参考答案
-    answers = parse_answers(answer_text)
-    if answers:
-        print(f"[0/3] 检测到参考答案，共 {len(answers)} 道题...")
+    # 解析题型分区计划 + 参考答案（均改为"有序"，规避题号跨题型碰撞）
+    sections = parse_sections(question_text)
+    answers_list = parse_answers(answer_text)
+    plan_desc = "，".join(f"{t.split('（')[0]}{c}题" for t, c in sections)
+    if answers_list:
+        print(f"[0/3] 检测到参考答案，共 {len(answers_list)} 道题；分区计划：{plan_desc}")
     else:
-        print("[0/3] 未检测到标准参考答案，答案卷将只含题目...")
+        print("[0/3] 未检测到标准参考答案，答案卷将只含题型分区...")
 
     # 生成两个输出路径
     out_path = os.path.abspath(args.output)
@@ -1873,15 +1958,15 @@ def main():
     paper_doc = build_docx(question_text, md_dir, mode="paper",
                            seamless=args.seamless, no_page_number=args.no_page_number)
 
-    print("[2/3] 生成教师卷（题目 + 彩色答案 + 彩色解析）...")
-    answer_doc = build_docx(question_text, md_dir, mode="answer", answers=answers,
-                              seamless=args.seamless, no_page_number=args.no_page_number)
+    print("[2/3] 生成答案卷（纯答案：题型分区 + 题号 + 蓝/绿解析，不重复题目）...")
+    answer_doc = build_answer_key(sections, answers_list, md_text, md_dir,
+                                  seamless=args.seamless, no_page_number=args.no_page_number)
 
     print("[3/3] 保存文档...")
     paper_doc.save(paper_path)
     answer_doc.save(answer_path)
     print(f"  -> 学生卷：{paper_path}")
-    print(f"  -> 教师卷：{answer_path}")
+    print(f"  -> 答案卷：{answer_path}")
 
 
 if __name__ == "__main__":
