@@ -1273,6 +1273,11 @@ def tokenize_inline(s):
     return tokens
 
 
+def _needs_omml(latex):
+    """Unicode 无法忠实渲染的结构（带被开方数的根号、跨行 cases）改用 OMML。"""
+    return bool(re.search(r'\\sqrt\s*\{', latex) or re.search(r'\\begin\s*\{\s*cases\s*\}', latex))
+
+
 def fill_inline(paragraph, text):
     has_math = False
     for kind, val in tokenize_inline(text):
@@ -1287,20 +1292,27 @@ def fill_inline(paragraph, text):
             set_run_fonts(r, BODY_ASCII, BODY_EA)
         else:  # math / math_bold —— 行内公式（`**$...$**` 也按公式渲染）
             has_math = True
-            unicode_text = _simple_to_unicode(val)
-            if unicode_text is not None:
-                # 简单公式（仅下标/上标）：用 Unicode 纯文本，
-                # 避免 OMML 在 WPS/旧版 Word 中渲染为方框
-                r = paragraph.add_run(unicode_text)
-                if kind == "math_bold":
-                    r.bold = True
-                set_run_fonts(r, BODY_ASCII, BODY_EA)
+            if _needs_omml(val):
+                # sqrt / cases 等 Unicode 无法画出顶线/跨行大括号的结构，
+                # 使用 Word 原生 OMML，以获得正确的数学排版。
+                omath = latex_to_omath(val)
+                r = paragraph.add_run()
+                r._r.append(omath)
             else:
-                # v6 fallback: raw text (no OMML - causes boxes)
-                r = paragraph.add_run(val)
-                if kind == "math_bold":
-                    r.bold = True
-                set_run_fonts(r, BODY_ASCII, BODY_EA)
+                unicode_text = _simple_to_unicode(val)
+                if unicode_text is not None:
+                    # 简单公式（仅下标/上标等）：用 Unicode 纯文本，
+                    # 避免 OMML 在 WPS/旧版 Word 中渲染为方框
+                    r = paragraph.add_run(unicode_text)
+                    if kind == "math_bold":
+                        r.bold = True
+                    set_run_fonts(r, BODY_ASCII, BODY_EA)
+                else:
+                    # v6 fallback: raw text (no OMML - causes boxes)
+                    r = paragraph.add_run(val)
+                    if kind == "math_bold":
+                        r.bold = True
+                    set_run_fonts(r, BODY_ASCII, BODY_EA)
     # 包含内联公式的段落：强制设置行距 + 段前/段后间距，
     # 防止上标/度数符号（超出基线以上的部分）被行高顶部裁掉。
     # 原理：Word 的 atLeast 行距通常把富余空间加在基线下方，
