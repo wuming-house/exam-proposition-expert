@@ -1283,13 +1283,14 @@ def tokenize_inline(s):
 
 
 def _needs_image(latex):
-    r"""只有 Unicode 无法画出顶线的 \sqrt{...} 才渲染为图片。
+    r"""Unicode 画不出的 \sqrt{...} 与跨行大括号 \begin{cases} 均渲染为图片。
 
-    cases / 不等式组仍走 Unicode 跨行大括号方案（WPS 中不会显示方框）。
+    - \sqrt{...}：Unicode 无顶线，降级为 matplotlib PNG；
+    - \begin{cases}：Unicode 跨行大括号（⎧/⎩）在试卷中易读成乱码，改为图片更清晰。
     """
     has_sqrt = bool(re.search(r'\\sqrt(?:\[^\]]*\])?\s*\{', latex))
     has_cases = bool(re.search(r'\\begin\s*\{\s*cases\s*\}', latex))
-    return has_sqrt and not has_cases
+    return has_sqrt or has_cases
 
 
 def _latex_to_mathtext(latex):
@@ -1323,6 +1324,63 @@ def _render_math_image(latex, fontsize=10.5, dpi=200):
         return None
 
 
+def _render_cases_image(latex, fontsize=10.5, dpi=200):
+    r"""把 \begin{cases}...\end{cases} 渲染为带左大括号的透明 PNG。
+
+    matplotlib mathtext 3.x 不支持 \begin{cases}/\begin{array}/\atop 等环境，
+    故这里逐行渲染方程、左侧另绘一个随行数缩放的花括号 `{`。
+    """
+    if plt is None:
+        return None
+    try:
+        inner = re.sub(r'\\begin\s*\{\s*cases\s*\}', '', latex)
+        inner = re.sub(r'\\end\s*\{\s*cases\s*\}', '', inner)
+        # 去掉 mathtext 不认识的文本/正体包裹（只保留内部内容）
+        inner = re.sub(r'\\text\s*\{([^{}]*)\}', r'\1', inner)
+        inner = re.sub(r'\\mathrm\s*\{([^{}]*)\}', r'\1', inner)
+        # 中文标点 mathtext 无法渲染，直接删除
+        inner = re.sub(r'[，。、；：！？（）「」『』“”‘’]', '', inner)
+        raw_lines = [L.strip() for L in re.split(r'\\\\', inner) if L.strip()]
+        lines = []
+        for L in raw_lines:
+            # 去掉条件列（& 之后），仅保留方程本身
+            L = L.split('&')[0].strip()
+            L = re.sub(r'\\le(?![a-zA-Z])', r'\\leq', L)
+            L = re.sub(r'\\ge(?![a-zA-Z])', r'\\geq', L)
+            L = re.sub(r'\\leqslant(?![a-zA-Z])', r'\\leq', L)
+            L = re.sub(r'\\geqslant(?![a-zA-Z])', r'\\geq', L)
+            L = re.sub(r'\\tfrac(?![a-zA-Z])', r'\\frac', L)
+            L = re.sub(r'[，。、；：！？（）]', '', L)
+            lines.append(L)
+        n = len(lines)
+        if n == 0:
+            return None
+
+        fig = plt.figure()
+        # 紧凑垂直排布：行间距 0.10 figure fraction
+        line_gap = 0.10
+        mid = 0.5
+        if n == 1:
+            ys = [mid]
+        else:
+            half_span = (n - 1) * line_gap / 2
+            ys = [mid + half_span - i * line_gap for i in range(n)]
+        eq_x = 0.30
+        brace_x = 0.18
+        for y, L in zip(ys, lines):
+            fig.text(eq_x, y, f'${L}$', fontsize=fontsize, ha='left', va='center')
+        # 花括号字号约等于总行高，保证上下臂覆盖所有方程
+        brace_font = fontsize * (1.0 + 0.7 * n)
+        fig.text(brace_x, mid, '{', fontsize=brace_font, ha='center', va='center')
+        buf = io.BytesIO()
+        fig.savefig(buf, format='png', dpi=dpi, bbox_inches='tight', pad_inches=0.04, transparent=True)
+        plt.close(fig)
+        buf.seek(0)
+        return buf
+    except Exception:
+        return None
+
+
 def fill_inline(paragraph, text):
     has_math = False
     for kind, val in tokenize_inline(text):
@@ -1338,8 +1396,13 @@ def fill_inline(paragraph, text):
         else:  # math / math_bold —— 行内公式（`**$...$**` 也按公式渲染）
             has_math = True
             if _needs_image(val):
-                # sqrt 用 matplotlib 渲染为 PNG，避免 WPS/旧版 Word 中 OMML 显示为方框。
-                img_buf = _render_math_image(val)
+                # sqrt / cases 用 matplotlib 渲染为 PNG，避免 WPS/旧版 Word 中
+                # OMML 显示为方框，也避免 cases 的 Unicode 散件大括号读成乱码。
+                has_cases = bool(re.search(r'\\begin\s*\{\s*cases\s*\}', val))
+                if has_cases:
+                    img_buf = _render_cases_image(val)
+                else:
+                    img_buf = _render_math_image(val)
                 if img_buf is not None:
                     r = paragraph.add_run()
                     r.add_picture(img_buf)
