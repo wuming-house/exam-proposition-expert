@@ -8,18 +8,20 @@ build_paper.py — 命题专家技能配套脚本（自包含，无需 pandoc）
 
 原理：
   1. 轻量 Markdown 解析器把试卷拆成标题/段落/列表/表格/图片/公式块。
-  2. LaTeX 公式经 `latex2mathml` 解析后，渲染为 Unicode 数学符号（分数、根号、上/下标、
-     希腊字母等）插入 Word 正文，因此公式可在 Word / WPS / LibreOffice 中清晰显示，
-     不是图片，也不会乱码。
-  3. 图片用 python-docx 直接嵌入。
-  4. 后处理统一中文字体、A4 页面、页边距、页码，可选左侧"密封线"。
+  2. 大部分 LaTeX 公式渲染为 Unicode 数学符号（分数、根号、上/下标、希腊字母等）插入 Word
+     正文，因此公式可在 Word / WPS / LibreOffice 中清晰显示，不是图片，也不会乱码。
+  3. 根号等 Unicode 无法完整画出顶线的结构，自动降级为 matplotlib 渲染的透明 PNG 小图嵌入，
+     避免在 WPS/旧版 Word 中出现 OMML 方框。
+  4. 图片用 python-docx 直接嵌入。
+  5. 后处理统一中文字体、A4 页面、页边距、页码，可选左侧"密封线"。
 
-依赖：python-docx、latex2mathml（可选 matplotlib 用于生成配图）。
+依赖：python-docx、latex2mathml、matplotlib（用于生成配图及根号图片降级）。
 用法：
   python build_paper.py paper.md -o 试卷.docx [--seamless] [--no-page-number]
 """
 
 import argparse
+import io
 import os
 import re
 import sys
@@ -37,6 +39,13 @@ try:
     from latex2mathml.converter import convert as latex_to_mathml
 except Exception as e:  # pragma: no cover
     sys.exit(f"[错误] 未安装 latex2mathml：请先 `pip install latex2mathml`。\n({e})")
+
+try:
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+except Exception:
+    plt = None
 
 # 注册命名空间，确保序列化时使用标准前缀（m:/wp:/a:/wps:），
 # 否则 lxml 会生成 ns0 等前缀，虽然 Word 仍能识别，但统一前缀更稳妥。
@@ -1273,9 +1282,45 @@ def tokenize_inline(s):
     return tokens
 
 
-def _needs_omml(latex):
-    """Unicode 无法忠实渲染的结构（带被开方数的根号、跨行 cases）改用 OMML。"""
-    return bool(re.search(r'\\sqrt\s*\{', latex) or re.search(r'\\begin\s*\{\s*cases\s*\}', latex))
+def _needs_image(latex):
+    r"""只有 Unicode 无法画出顶线的 \sqrt{...} 才渲染为图片。
+
+    cases / 不等式组仍走 Unicode 跨行大括号方案（WPS 中不会显示方框）。
+    """
+    has_sqrt = bool(re.search(r'\\sqrt(?:\[^\]]*\])?\s*\{', latex))
+    has_cases = bool(re.search(r'\\begin\s*\{\s*cases\s*\}', latex))
+    return has_sqrt and not has_cases
+
+
+def _latex_to_mathtext(latex):
+    """把常见 LaTeX 命令转换为 matplotlib mathtext 可识别的形式。"""
+    latex = re.sub(r'\\le(?![a-zA-Z])', r'\\leq', latex)
+    latex = re.sub(r'\\ge(?![a-zA-Z])', r'\\geq', latex)
+    latex = re.sub(r'\\leqslant(?![a-zA-Z])', r'\\leq', latex)
+    latex = re.sub(r'\\geqslant(?![a-zA-Z])', r'\\geq', latex)
+    latex = re.sub(r'\\tfrac(?![a-zA-Z])', r'\\frac', latex)
+    # 去掉 mathtext 不认识的文本/正体包裹（只保留内部内容）
+    latex = re.sub(r'\\text\s*\{([^{}]*)\}', r'\1', latex)
+    latex = re.sub(r'\\mathrm\s*\{([^{}]*)\}', r'\1', latex)
+    # 中文标点 mathtext 无法渲染，直接删除
+    latex = re.sub(r'[，。、；：！？（）「」『』“”‘’]', '', latex)
+    return latex
+
+def _render_math_image(latex, fontsize=10.5, dpi=200):
+    """用 matplotlib 把单个 LaTeX 公式渲染为透明背景 PNG，返回 BytesIO。"""
+    if plt is None:
+        return None
+    try:
+        mt = _latex_to_mathtext(latex)
+        fig = plt.figure(figsize=(0.1, 0.1))
+        fig.text(0.5, 0.0, f'${mt}$', fontsize=fontsize, ha='center', va='baseline')
+        buf = io.BytesIO()
+        fig.savefig(buf, format='png', dpi=dpi, bbox_inches='tight', pad_inches=0.02, transparent=True)
+        plt.close(fig)
+        buf.seek(0)
+        return buf
+    except Exception:
+        return None
 
 
 def fill_inline(paragraph, text):
@@ -1292,12 +1337,19 @@ def fill_inline(paragraph, text):
             set_run_fonts(r, BODY_ASCII, BODY_EA)
         else:  # math / math_bold —— 行内公式（`**$...$**` 也按公式渲染）
             has_math = True
-            if _needs_omml(val):
-                # sqrt / cases 等 Unicode 无法画出顶线/跨行大括号的结构，
-                # 使用 Word 原生 OMML，以获得正确的数学排版。
-                omath = latex_to_omath(val)
-                r = paragraph.add_run()
-                r._r.append(omath)
+            if _needs_image(val):
+                # sqrt 用 matplotlib 渲染为 PNG，避免 WPS/旧版 Word 中 OMML 显示为方框。
+                img_buf = _render_math_image(val)
+                if img_buf is not None:
+                    r = paragraph.add_run()
+                    r.add_picture(img_buf)
+                else:
+                    # 图片渲染失败时退回 Unicode（可能会失去根号顶线）
+                    unicode_text = _simple_to_unicode(val)
+                    r = paragraph.add_run(unicode_text if unicode_text is not None else val)
+                    if kind == "math_bold":
+                        r.bold = True
+                    set_run_fonts(r, BODY_ASCII, BODY_EA)
             else:
                 unicode_text = _simple_to_unicode(val)
                 if unicode_text is not None:
