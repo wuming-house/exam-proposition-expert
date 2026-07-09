@@ -540,10 +540,16 @@ def _latex_to_unicode(latex):
                             cline = _latex_to_unicode(bl) or bl
                             converted_lines.append(cline)
                         if converted_lines:
-                            # Render as { first line\n second line ...
-                            result.append('{' + converted_lines[0])
-                            for cl in converted_lines[1:]:
-                                result.append('\n' + cl)
+                            # Render cases with Unicode curly-bracket extension
+                            # pieces so the left brace visually spans all lines.
+                            n = len(converted_lines)
+                            if n == 1:
+                                result.append('{' + converted_lines[0])
+                            else:
+                                result.append('\u23a7 ' + converted_lines[0])
+                                for cl in converted_lines[1:-1]:
+                                    result.append('\n\u23a8 ' + cl)
+                                result.append('\n\u23a9 ' + converted_lines[-1])
                         i = end_pos + len(end_tag)
                         continue
                     else:
@@ -584,10 +590,11 @@ def _latex_to_unicode(latex):
                     end = _find_matching_brace(latex, j)
                     inner = latex[j+1:end]
                     inner_u = _latex_to_unicode(inner) or inner
-                    # Unicode radical covers only one char; group multi-char
-                    # arguments with parentheses to avoid ambiguity.
+                    # Unicode radical cannot draw a true vinculum. For multi-char
+                    # radicands we group with parentheses and add a combining
+                    # overline (U+0305) after the radical to suggest the top bar.
                     if len(inner_u) > 1:
-                        result.append('\u221a(' + inner_u + ')')
+                        result.append('\u221a\u0305(' + inner_u + ')')
                     else:
                         result.append('\u221a' + inner_u)
                     i = end + 1
@@ -601,7 +608,7 @@ def _latex_to_unicode(latex):
                         inner = latex[k+1:end]
                         inner_u = _latex_to_unicode(inner) or inner
                         if len(inner_u) > 1:
-                            result.append('\u221a(' + inner_u + ')')
+                            result.append('\u221a\u0305(' + inner_u + ')')
                         else:
                             result.append('\u221a' + inner_u)
                         i = end + 1
