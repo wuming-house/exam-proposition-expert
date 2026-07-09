@@ -1,7 +1,7 @@
 ---
 name: exam-proposition-expert
 version: 1.1.0
-description: 以资深命题专家（50年经验退休教授）身份，按真实学校命题流程，以"命题人 / 审题人"双角色独立把关生成可直接打印的 Word 试卷（docx）。公式转为 Word 原生可编辑方程、配图正确嵌入不乱；审题人独立审查并产出《审题报告》，未通过不得定稿。当用户需要出试卷、命题、出考题、组卷、生成考试卷，或询问命题流程时使用。
+description: 以资深命题专家（50年经验退休教授）身份，按真实学校命题流程，以"命题人 / 审题人"双角色独立把关生成可直接打印的 Word 试卷（docx）。LaTeX 公式统一渲染为 Unicode 数学符号（兼容 Word/WPS/LibreOffice，可显示分数、根号、上/下标等），配图正确嵌入不乱；审题人独立审查并产出《审题报告》，未通过不得定稿。当用户需要出试卷、命题、出考题、组卷、生成考试卷，或询问命题流程时使用。
 agent_created: true
 ---
 
@@ -163,13 +163,13 @@ agent_created: true
      `C:\Users\wuming\.workbuddy\binaries\python\envs\default\Scripts\python.exe`
    - 换机器或缺依赖时：`pip install python-docx latex2mathml matplotlib`
    - 选项：`--seamless` 加左侧竖排"密封线"；`--no-page-number` 取消页码。
-3. 脚本流程（**自包含，无需 pandoc 等外部二进制**）：轻量解析 Markdown → LaTeX 公式经 `latex2mathml` 转 MathML、再转 **Word 原生可编辑方程（OMML）**，图片直接嵌入 → python-docx 统一中文字体、A4 页面、页边距、页码 → 产出可直接打印的 docx。公式是 Word 里能双击编辑的真方程，绝不会乱码。
+3. 脚本流程（**自包含，无需 pandoc 等外部二进制**）：轻量解析 Markdown → LaTeX 公式经 `latex2mathml` 解析后，**以 Unicode 数学符号（上/下标、分数线、根号、希腊字母等）渲染进 Word 正文**，图片直接嵌入 → python-docx 统一中文字体、A4 页面、页边距、页码 → 产出可直接打印的 docx。公式以清晰可读的纯文本形式显示，兼容 Word、WPS 与 LibreOffice，不是图片、不会乱码。
 
 ## 十、第五步：交付前自检（给用户的质量清单）
 
 - [ ] 已走完"命题人起草 → 审题人独立审查 → 通过"双角色流程
 - [ ] 《审题报告》已产出，结论为"通过"（或已按意见修订并复审通过）
-- [ ] 公式在 Word 中可编辑（是原生方程，不是图片）
+- [ ] 公式在 Word 中显示正确、不溢出、不乱码（Unicode 数学符号，兼容 Word/WPS/LibreOffice）
 - [ ] 图片已嵌入、清晰、未溢出页面
 - [ ] 题号连续、各题分值合计 = 满分
 - [ ] 无超纲、无歧义、答案唯一
@@ -249,7 +249,7 @@ agent_created: true
 ## 十二、附：环境依赖与脚本
 
 - `python-docx`：排版后处理与 docx 写出（**必须**）。
-- `latex2mathml`：把 LaTeX 公式转成 Word 原生方程（**必须**）。
+- `latex2mathml`：把 LaTeX 公式解析并渲染为 Unicode 数学符号（**必须**）。
 - `matplotlib`：生成配图（按需）。
 - 本机隔离环境已预装上述三方库；换机器时 `pip install python-docx latex2mathml matplotlib` 即可。脚本完全自包含，不依赖 pandoc 等外部二进制。
 - `scripts/build_paper.py`：Markdown → 可打印 docx。

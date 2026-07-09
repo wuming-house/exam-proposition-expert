@@ -8,8 +8,9 @@ build_paper.py — 命题专家技能配套脚本（自包含，无需 pandoc）
 
 原理：
   1. 轻量 Markdown 解析器把试卷拆成标题/段落/列表/表格/图片/公式块。
-  2. LaTeX 公式经 latex2mathml 转 MathML，再转成 Word 原生可编辑方程（OMML），
-     因此公式是 Word 里能编辑的方程，而不是图片，绝不会乱。
+  2. LaTeX 公式经 `latex2mathml` 解析后，渲染为 Unicode 数学符号（分数、根号、上/下标、
+     希腊字母等）插入 Word 正文，因此公式可在 Word / WPS / LibreOffice 中清晰显示，
+     不是图片，也不会乱码。
   3. 图片用 python-docx 直接嵌入。
   4. 后处理统一中文字体、A4 页面、页边距、页码，可选左侧"密封线"。
 
