@@ -299,21 +299,47 @@ _LATEX_SYMBOL = {
     _bslash + "rightarrow": "\u2192", _bslash + "to": "\u2192",
     _bslash + "leftarrow": "\u2190", _bslash + "Leftarrow": "\u21d0",
     _bslash + "Rightarrow": "\u21d2", _bslash + "Leftrightarrow": "\u21d4",
-    _bslash + "leftrightarrow": "\u2194", _bslash + "leq": "\u2264",
-    _bslash + "rightleftharpoons": "\u21cc", _bslash + "leftrightharpoons": "\u21cc",
-    _bslash + "geq": "\u2265", _bslash + "neq": "\u2260", _bslash + "pm": "\u00b1",
+    _bslash + "leftrightarrow": "\u2194",
+    # comparison / relation
+    _bslash + "leq": "\u2264", _bslash + "le": "\u2264",
+    _bslash + "geq": "\u2265", _bslash + "ge": "\u2265",
+    _bslash + "neq": "\u2260", _bslash + "ne": "\u2260", _bslash + "not=": "\u2260",
+    _bslash + "ll": "\u226a", _bslash + "gg": "\u226b",
+    _bslash + "simeq": "\u2243", _bslash + "approxeq": "\u224a",
+    _bslash + "equiv": "\u2261", _bslash + "cong": "\u2245", _bslash + "ncong": "\u2247",
+    _bslash + "propto": "\u221d", _bslash + "sim": "\u223c", _bslash + "nsim": "\u2241",
+    _bslash + "mid": "|", _bslash + "nmid": "\u2224",
+    _bslash + "parallel": "\u2225", _bslash + "nparallel": "\u2226",
+    _bslash + "perp": "\u22a5", _bslash + "bot": "\u22a5",
+    _bslash + "therefore": "\u2234", _bslash + "because": "\u2235",
+    # operators
+    _bslash + "pm": "\u00b1", _bslash + "mp": "\u2213",
     _bslash + "approx": "\u2248", _bslash + "times": "\u00d7", _bslash + "cdot": "\u22c5",
     _bslash + "div": "\u00f7", _bslash + "ldots": "\u2026", _bslash + "cdots": "\u22ef",
     _bslash + "uparrow": "\u2191", _bslash + "downarrow": "\u2193",
+    _bslash + "star": "\u2605", _bslash + "ast": "\u2217", _bslash + "bullet": "\u2022",
+    _bslash + "wedge": "\u2227", _bslash + "vee": "\u2228", _bslash + "neg": "\u00ac",
+    _bslash + "top": "\u22a4",
+    # Greek letters
     _bslash + "alpha": "\u03b1", _bslash + "beta": "\u03b2", _bslash + "gamma": "\u03b3",
     _bslash + "delta": "\u03b4", _bslash + "theta": "\u03b8", _bslash + "pi": "\u03c0",
     _bslash + "sigma": "\u03c3", _bslash + "omega": "\u03c9", _bslash + "Delta": "\u0394",
-    _bslash + "Sigma": "\u03a3", _bslash + "Omega": "\u03a9", _bslash + "infty": "\u221e",
+    _bslash + "Sigma": "\u03a3", _bslash + "Omega": "\u03a9",
+    # geometry / shapes
+    _bslash + "infty": "\u221e",
     _bslash + "circ": "\u00b0", _bslash + "degree": "\u00b0",
+    _bslash + "angle": "\u2220", _bslash + "measuredangle": "\u2221", _bslash + "sphericalangle": "\u2222",
+    _bslash + "triangle": "\u25b3", _bslash + "square": "\u25a1", _bslash + "Box": "\u25a1",
+    _bslash + "lozenge": "\u25ca", _bslash + "diamond": "\u25c7",
+    _bslash + "odot": "\u2299", _bslash + "ominus": "\u2296", _bslash + "oplus": "\u2295",
+    _bslash + "otimes": "\u2297", _bslash + "oslash": "\u2298",
+    # set theory / logic
     _bslash + "uplus": "\u228e", _bslash + "cap": "\u2229", _bslash + "cup": "\u222a",
     _bslash + "in": "\u2208", _bslash + "notin": "\u2209", _bslash + "subset": "\u2282",
     _bslash + "supset": "\u2283", _bslash + "subseteq": "\u2286", _bslash + "supseteq": "\u2287",
-    _bslash + "emptyset": "\u2205", _bslash + "nabla": "\u2207", _bslash + "partial": "\u2202",
+    _bslash + "emptyset": "\u2205", _bslash + "varnothing": "\u2205",
+    _bslash + "nabla": "\u2207", _bslash + "partial": "\u2202",
+    _bslash + "forall": "\u2200", _bslash + "exists": "\u2203",
     _bslash + "prime": "\u2032", _bslash + "sqrt": "\u221a",
     # Large operators (approximate as Unicode base symbol)
     _bslash + "sum": "\u2211",       # ∑
@@ -325,8 +351,8 @@ _LATEX_SYMBOL = {
     _bslash + "stackrel": "\u2192",  # simplified arrow
     _bslash + "overset": "^",
     _bslash + "underset": "_",
-    
-        # Accents/combining symbols
+
+    # Accents/combining symbols
     _bslash + "bar": "\u0304",    # combining macron/overline
     _bslash + "hat": "\u0302",    # combining circumflex
     _bslash + "vec": "\u20d7",    # combining right arrow above
@@ -384,6 +410,29 @@ def _find_matching_brace(latex, start):
                 return i
         i += 1
     return len(latex) - 1
+
+
+def _parse_latex_command(latex, i):
+    """Parse a LaTeX command starting at position i (which must point to a backslash).
+    Returns (command_text_consumed, new_i) where command_text_consumed includes the
+    backslash command and any immediately following braced argument.
+    Returns (None, i) if no command can be parsed.
+    """
+    n = len(latex)
+    if i >= n or latex[i] != _bslash:
+        return None, i
+    j = i + 1
+    # command name: letters only
+    while j < n and latex[j].isalpha():
+        j += 1
+    if j == i + 1:
+        return None, i
+    cmd_end = j
+    # optional braced argument
+    if j < n and latex[j] == '{':
+        arg_end = _find_matching_brace(latex, j)
+        return latex[i:arg_end + 1], arg_end + 1
+    return latex[i:cmd_end], cmd_end
 
 
 def _latex_to_unicode(latex):
@@ -476,6 +525,29 @@ def _latex_to_unicode(latex):
                             break
                     if end_found:
                         continue
+                elif env_name == 'cases':
+                    # ====== \begin{cases} ... \end{cases} ======
+                    end_tag = _CMD_END + '{cases}'
+                    end_pos = latex.find(end_tag, bend + 1)
+                    if end_pos != -1:
+                        body = latex[bend+1:end_pos]
+                        body_lines = body.split(_bslash + _bslash)
+                        converted_lines = []
+                        for bl in body_lines:
+                            bl = bl.strip()
+                            if bl.startswith('&'):
+                                bl = bl[1:].strip()
+                            cline = _latex_to_unicode(bl) or bl
+                            converted_lines.append(cline)
+                        if converted_lines:
+                            # Render as { first line\n second line ...
+                            result.append('{' + converted_lines[0])
+                            for cl in converted_lines[1:]:
+                                result.append('\n' + cl)
+                        i = end_pos + len(end_tag)
+                        continue
+                    else:
+                        return None
                 else:
                     # matrix/cases → not convertible
                     return None
@@ -512,7 +584,12 @@ def _latex_to_unicode(latex):
                     end = _find_matching_brace(latex, j)
                     inner = latex[j+1:end]
                     inner_u = _latex_to_unicode(inner) or inner
-                    result.append('\u221a' + inner_u)
+                    # Unicode radical covers only one char; group multi-char
+                    # arguments with parentheses to avoid ambiguity.
+                    if len(inner_u) > 1:
+                        result.append('\u221a(' + inner_u + ')')
+                    else:
+                        result.append('\u221a' + inner_u)
                     i = end + 1
                 elif j < n and latex[j] == '[':
                     bracket_end = latex.index(']', j + 1)
@@ -523,7 +600,10 @@ def _latex_to_unicode(latex):
                         end = _find_matching_brace(latex, k)
                         inner = latex[k+1:end]
                         inner_u = _latex_to_unicode(inner) or inner
-                        result.append('\u221a' + inner_u)
+                        if len(inner_u) > 1:
+                            result.append('\u221a(' + inner_u + ')')
+                        else:
+                            result.append('\u221a' + inner_u)
                         i = end + 1
                     else:
                         result.append('\u221a')
@@ -629,6 +709,17 @@ def _latex_to_unicode(latex):
                 for c in inner_u:
                     result.append(_SUB_MAP.get(c, c))
                 i = j + 1
+            elif latex[i + 1] == _bslash:
+                # e.g. _\circ, _\text{...}
+                cmd_text, new_i = _parse_latex_command(latex, i + 1)
+                if cmd_text is not None:
+                    inner_u = _latex_to_unicode(cmd_text) or cmd_text
+                    for c in inner_u:
+                        result.append(_SUB_MAP.get(c, c))
+                    i = new_i
+                else:
+                    result.append(_SUB_MAP.get(latex[i + 1], latex[i + 1]))
+                    i += 2
             else:
                 result.append(_SUB_MAP.get(latex[i + 1], latex[i + 1]))
                 i += 2
@@ -642,6 +733,17 @@ def _latex_to_unicode(latex):
                 for c in inner_u:
                     result.append(_SUP_MAP.get(c, c))
                 i = j + 1
+            elif latex[i + 1] == _bslash:
+                # e.g. ^\circ, ^\text{...}
+                cmd_text, new_i = _parse_latex_command(latex, i + 1)
+                if cmd_text is not None:
+                    inner_u = _latex_to_unicode(cmd_text) or cmd_text
+                    for c in inner_u:
+                        result.append(_SUP_MAP.get(c, c))
+                    i = new_i
+                else:
+                    result.append(_SUP_MAP.get(latex[i + 1], latex[i + 1]))
+                    i += 2
             else:
                 result.append(_SUP_MAP.get(latex[i + 1], latex[i + 1]))
                 i += 2
