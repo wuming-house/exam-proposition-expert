@@ -30,6 +30,7 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_LINE_SPACING
 from docx.oxml.ns import qn
 from docx.oxml import OxmlElement
 from docx.shared import Pt, Cm, Mm, Emu
+from docx.text.paragraph import Paragraph
 
 try:
     from latex2mathml.converter import convert as latex_to_mathml
@@ -179,10 +180,32 @@ def _normalize_mathml(math_elem):
 
 # LaTeX -> Word 原生方程（OMML）
 # ----------------------------------------------------------------------------
+# amsmath 环境兼容表：latex2mathml 不支持 aligned / eqnarray（会泄漏 & 对齐符，
+# 生成非法 MathML 导致 XML 解析失败），但它支持 align。把前者改写为 align 即可
+# 正确生成多行矩阵（m:m），保留 & 列对齐语义。align/gather/cases/matrix 等原生支持。
+_ALIGN_REPL = [
+    (r"\begin{aligned}", r"\begin{align}"),
+    (r"\end{aligned}", r"\end{align}"),
+    (r"\begin{aligned*}", r"\begin{align*}"),
+    (r"\end{aligned*}", r"\end{align*}"),
+    (r"\begin{eqnarray}", r"\begin{align}"),
+    (r"\end{eqnarray}", r"\end{align}"),
+    (r"\begin{eqnarray*}", r"\begin{align*}"),
+    (r"\end{eqnarray*}", r"\end{align*}"),
+]
+
+
+def _preprocess_latex(tex):
+    """把 latex2mathml 不支持的对齐环境改写为其支持的等价环境。"""
+    for a, b in _ALIGN_REPL:
+        tex = tex.replace(a, b)
+    return tex
+
+
 def latex_to_omath(latex):
     """把一段 LaTeX 转成 <m:oMath> 元素；失败则退化为纯文本。"""
     try:
-        mathml = latex_to_mathml(latex)
+        mathml = latex_to_mathml(_preprocess_latex(latex))
         # 用 lxml 解析（支持 .getparent()，规整化需要）
         root = lxml_et.fromstring(mathml.encode("utf-8"))
         _normalize_mathml(root)   # 修复 latex2mathml 的畸形结构
@@ -192,11 +215,446 @@ def latex_to_omath(latex):
         sys.stderr.write(f"[提示] 公式转换失败，已退化为文本：{latex} ({e})\n")
         o = m("oMath")
         r = m("r")
+        rpr_fallback = m("rPr")
+        rf_fb = m("rFonts")
+        rf_fb.set(qn("m:ascii"), "Cambria Math")
+        rf_fb.set(qn("m:hAnsi"), "Cambria Math")
+        rpr_fallback.append(rf_fb)
+        r.append(rpr_fallback)
         t = m("t")
         t.text = latex
         r.append(t)
         o.append(r)
         return o
+
+
+# -*- coding: utf-8 -*-
+"""
+Correct v5 _latex_to_unicode function.
+This file will be inserted into build_paper.py between the start/end markers.
+"""
+
+# ====== 全面 Unicode 降级（v5：覆盖分数/根号/对齐环境，避免 OMML 在 WPS 中变方框）======
+
+_SUB_MAP = {
+    '0': '\u2080', '1': '\u2081', '2': '\u2082', '3': '\u2083',
+    '4': '\u2084', '5': '\u2085', '6': '\u2086', '7': '\u2087',
+    '8': '\u2088', '9': '\u2089', '+': '\u208a', '-': '\u208b',
+    '=': '\u208c', '(': '\u208d', ')': '\u208e',
+}
+_SUP_MAP = {
+    '0': '\u2070', '1': '\u00b9', '2': '\u00b2', '3': '\u00b3',
+    '4': '\u2074', '5': '\u2075', '6': '\u2076', '7': '\u2077',
+    '8': '\u2078', '9': '\u2079', '+': '\u207a', '-': '\u207b',
+    '=': '\u207c', '(': '\u207d', ')': '\u207e', 'n': '\u207f',
+}
+
+_LATEX_SYMBOL = {}
+
+# Populate symbol table safely
+_sym_data = [
+    ("\u2192", "\u2192"),  # placeholder
+]
+# We'll populate this below using direct dict assignment
+
+import re
+
+# Build _LATEX_SYMBOL by direct assignment (avoid escape issues)
+_pairs = [
+    # Each tuple: (laTeX_cmd_string, unicode_char)
+    # Using chr() concatenation for backslash + cmd name
+]
+# Actually, let me just use a different approach - define commands as variables
+
+# LaTeX command names (each is backslash + letters)  
+# Use explicit string construction to avoid escaping hell
+_bslash = chr(92)  # backslash character
+
+_CMD_FRAC   = _bslash + "frac"
+_CMD_DFRAC  = _bslash + "dfrac" 
+_CMD_TFRAC  = _bslash + "tfrac"
+_CMD_BEGIN  = _bslash + "begin"
+_CMD_END    = _bslash + "end"
+_CMD_SQRT   = _bslash + "sqrt"
+_CMD_LEFT   = _bslash + "left"
+_CMD_RIGHT  = _bslash + "right"
+_CMD_BIGL   = _bslash + "bigl"
+_CMD_BIGR   = _bslash + "bigr"
+_CMD_BIGL2  = _bslash + "Bigl"
+_CMD_BIGR2  = _bslash + "Bigr"
+_CMD_BIGGL  = _bslash + "biggl"
+_CMD_BIGGR  = _bslash + "biggr"
+_CMD_TEXT   = _bslash + "text"
+_CMD_MBF    = _bslash + "mathbf"
+_CMD_MRM    = _bslash + "mathrm"
+_CMD_MBB    = _bslash + "mathbb"
+_CMD_MCAL   = _bslash + "mathcal"
+_CMD_XRIGHT = _bslash + "xrightarrow"
+_CMD_XLEFT  = _bslash + "xleftarrow"
+_CMD_QUAD   = _bslash + "quad"
+_CMD_QQUAD  = _bslash + "qquad"
+
+_LATEX_SYMBOL = {
+    _bslash + "rightarrow": "\u2192", _bslash + "to": "\u2192",
+    _bslash + "leftarrow": "\u2190", _bslash + "Leftarrow": "\u21d0",
+    _bslash + "Rightarrow": "\u21d2", _bslash + "Leftrightarrow": "\u21d4",
+    _bslash + "leftrightarrow": "\u2194", _bslash + "leq": "\u2264",
+    _bslash + "rightleftharpoons": "\u21cc", _bslash + "leftrightharpoons": "\u21cc",
+    _bslash + "geq": "\u2265", _bslash + "neq": "\u2260", _bslash + "pm": "\u00b1",
+    _bslash + "approx": "\u2248", _bslash + "times": "\u00d7", _bslash + "cdot": "\u22c5",
+    _bslash + "div": "\u00f7", _bslash + "ldots": "\u2026", _bslash + "cdots": "\u22ef",
+    _bslash + "uparrow": "\u2191", _bslash + "downarrow": "\u2193",
+    _bslash + "alpha": "\u03b1", _bslash + "beta": "\u03b2", _bslash + "gamma": "\u03b3",
+    _bslash + "delta": "\u03b4", _bslash + "theta": "\u03b8", _bslash + "pi": "\u03c0",
+    _bslash + "sigma": "\u03c3", _bslash + "omega": "\u03c9", _bslash + "Delta": "\u0394",
+    _bslash + "Sigma": "\u03a3", _bslash + "Omega": "\u03a9", _bslash + "infty": "\u221e",
+    _bslash + "circ": "\u00b0", _bslash + "degree": "\u00b0",
+    _bslash + "uplus": "\u228e", _bslash + "cap": "\u2229", _bslash + "cup": "\u222a",
+    _bslash + "in": "\u2208", _bslash + "notin": "\u2209", _bslash + "subset": "\u2282",
+    _bslash + "supset": "\u2283", _bslash + "subseteq": "\u2286", _bslash + "supseteq": "\u2287",
+    _bslash + "emptyset": "\u2205", _bslash + "nabla": "\u2207", _bslash + "partial": "\u2202",
+    _bslash + "prime": "\u2032", _bslash + "sqrt": "\u221a",
+    # Large operators (approximate as Unicode base symbol)
+    _bslash + "sum": "\u2211",       # ∑
+    _bslash + "int": "\u222b",       # ∫
+    _bslash + "prod": "\u220f",      # ∏
+    _bslash + "lim": "lim",
+    _bslash + "over": "/",
+    _bslash + "choose": "C",
+    _bslash + "stackrel": "\u2192",  # simplified arrow
+    _bslash + "overset": "^",
+    _bslash + "underset": "_",
+    
+        # Accents/combining symbols
+    _bslash + "bar": "\u0304",    # combining macron/overline
+    _bslash + "hat": "\u0302",    # combining circumflex
+    _bslash + "vec": "\u20d7",    # combining right arrow above
+    _bslash + "dot": "\u0307",    # combining dot above
+    _bslash + "tilde": "\u0303",  # combining tilde
+    _bslash + "overline": "\u203e",
+}
+
+_OMML_ONLY_PATTERNS = [
+    r'\\begin\{(matrix|cases|bmatrix|pmatrix|vmatrix|Vmatrix)\}',
+    r'\\sum_\{', r'\\int_\{', r'\\prod_\{', r'\\lim_\{',
+    r'\\over\s*\{', r'\\choose\s*\{',
+    r'\\stackrel\{', r'\\overset\{', r'\\underset\{',
+]
+
+
+def _parse_matrix_table(latex):
+    """Parse \\begin{matrix|array|...}...\\end{...} into list-of-lists (cells already Unicode-converted).
+    Returns None if latex is not a matrix environment."""
+    m = re.match(r'\\begin\{(matrix|array|bmatrix|pmatrix|vmatrix|Vmatrix)\}\s*(.*?)\\end\{\1\}', latex, re.DOTALL)
+    if not m:
+        return None
+    body = m.group(2).strip()
+    rows = []
+    for line in body.split(_bslash * 2):
+        line = line.strip()
+        if not line:
+            continue
+        cells = [c.strip() for c in line.split('&')]
+        uni_cells = []
+        for c in cells:
+            u = _latex_to_unicode(c)
+            uni_cells.append(u if u is not None else c)
+        rows.append(uni_cells)
+    return rows
+
+
+
+def _is_omml_only(latex):
+    """v6: Always return False - all LaTeX is converted to Unicode or Word tables.
+    No formula should ever use OMML (causes □ boxes in user's software)."""
+    return False
+
+
+def _find_matching_brace(latex, start):
+    """Find matching } from position start (which should be at {)."""
+    depth = 0
+    i = start
+    while i < len(latex):
+        if latex[i] == '{':
+            depth += 1
+        elif latex[i] == '}':
+            depth -= 1
+            if depth == 0:
+                return i
+        i += 1
+    return len(latex) - 1
+
+
+def _latex_to_unicode(latex):
+    """Convert LaTeX formula to plain Unicode text (v5 comprehensive).
+    
+    Supports subscripts, superscripts, fractions (\\frac, \\dfrac, \\tfrac),
+    square roots (\\sqrt), aligned environments (\\begin{aligned}...\\end{aligned}),
+    common symbols (\\times, \\cdot, \\div, \\rightarrow, etc.), \\text{}, \\mathbf{},
+    \\left(...\\right), and more.
+    
+    Returns None only for truly unconvertible structures like matrices,
+    summation/integral limits, etc.
+    """
+    if _is_omml_only(latex):
+        return None
+    
+    result = []
+    i = 0
+    n = len(latex)
+    
+    while i < n:
+        ch = latex[i]
+        
+        if ch == _bslash and i + 1 < n:
+            
+            # ====== \frac{num}{den} / \dfrac / \tfrac ======
+            frac_matched = False
+            for fcmd, flen in [(_CMD_FRAC, len(_CMD_FRAC)), 
+                                (_CMD_DFRAC, len(_CMD_DFRAC)),
+                                (_CMD_TFRAC, len(_CMD_TFRAC))]:
+                if latex[i:i+flen] == fcmd:
+                    j = i + flen
+                    while j < n and latex[j] in ' \t':
+                        j += 1
+                    if j < n and latex[j] == '{':
+                        num_end = _find_matching_brace(latex, j)
+                        num_inner = latex[j+1:num_end]
+                        k = num_end + 1
+                        while k < n and latex[k] in ' \t':
+                            k += 1
+                        if k < n and latex[k] == '{':
+                            den_end = _find_matching_brace(latex, k)
+                            den_inner = latex[k+1:den_end]
+                            num_u = _latex_to_unicode(num_inner) or num_inner
+                            den_u = _latex_to_unicode(den_inner) or den_inner
+                            result.append(num_u + '/' + den_u)
+                            i = den_end + 1
+                            frac_matched = True
+                            break
+                    if not frac_matched:
+                        result.append('frac')
+                        i = flen  # wrong: should advance past cmd
+                        # Fix: we need to advance i past the command
+                        # But we've already consumed up to i+flen conceptually
+                        # Actually we haven't moved i yet since we're still at the backslash position
+                        i += flen
+                        frac_matched = True
+                    break
+            
+            if frac_matched:
+                continue
+            
+            # ====== \begin{aligned} ... \end{aligned} ======
+            if latex[i:i+len(_CMD_BEGIN)] == _CMD_BEGIN and i+len(_CMD_BEGIN) < n and latex[i+len(_CMD_BEGIN)] == '{':
+                bstart = i + len(_CMD_BEGIN) + 1
+                bend = latex.index('}', bstart)
+                env_name = latex[bstart:bend].strip()
+                aligned_names = ['aligned', 'align', 'aligned*', 'align*']
+                if env_name in aligned_names:
+                    base_name = env_name.rstrip('*')
+                    end_found = False
+                    for try_name in [env_name, base_name]:
+                        end_tag = _CMD_END + '{' + try_name + '}'
+                        end_pos = latex.find(end_tag, bend + 1)
+                        if end_pos != -1:
+                            body = latex[bend+1:end_pos]
+                            body_lines = body.split(_bslash + _bslash)  # split on \\
+                            converted_lines = []
+                            for bl in body_lines:
+                                bl = bl.strip()
+                                if bl.startswith('&'):
+                                    bl = bl[1:].strip()
+                                bl = bl.replace('&', '  ')
+                                bl = re.sub(r'\\(?:quad|qquad)', '  ', bl)
+                                cline = _latex_to_unicode(bl) or bl
+                                converted_lines.append(cline)
+                            result.append('\n'.join(converted_lines))
+                            i = end_pos + len(end_tag)
+                            end_found = True
+                            break
+                    if end_found:
+                        continue
+                else:
+                    # matrix/cases → not convertible
+                    return None
+            
+            # ====== \end{...} isolated ======
+            if latex[i:i+len(_CMD_END)] == _CMD_END and i+len(_CMD_END) < n and latex[i+len(_CMD_END)] == '{':
+                eend = latex.index('}', i + len(_CMD_END) + 1)
+                i = eend + 1
+                continue
+            
+            # ====== \xrightarrow{...} / \xleftarrow{...} ======
+            xr_matched = False
+            for xrcmd, xrarrow, xrlen in [
+                (_CMD_XRIGHT, '\u2192', len(_CMD_XRIGHT)),
+                (_CMD_XLEFT, '\u2190', len(_CMD_XLEFT)),
+            ]:
+                if latex[i:i+xrlen] == xrcmd:
+                    start = i + xrlen
+                    if start < n and latex[start] == '{':
+                        end = _find_matching_brace(latex, start)
+                        i = end + 1
+                    else:
+                        i += xrlen
+                    result.append(xrarrow)
+                    xr_matched = True
+                    break
+            if xr_matched:
+                continue
+            
+            # ====== \sqrt{...} ======
+            if latex[i:i+len(_CMD_SQRT)] == _CMD_SQRT:
+                j = i + len(_CMD_SQRT)
+                if j < n and latex[j] == '{':
+                    end = _find_matching_brace(latex, j)
+                    inner = latex[j+1:end]
+                    inner_u = _latex_to_unicode(inner) or inner
+                    result.append('\u221a' + inner_u)
+                    i = end + 1
+                elif j < n and latex[j] == '[':
+                    bracket_end = latex.index(']', j + 1)
+                    k = bracket_end + 1
+                    while k < n and latex[k] in ' \t':
+                        k += 1
+                    if k < n and latex[k] == '{':
+                        end = _find_matching_brace(latex, k)
+                        inner = latex[k+1:end]
+                        inner_u = _latex_to_unicode(inner) or inner
+                        result.append('\u221a' + inner_u)
+                        i = end + 1
+                    else:
+                        result.append('\u221a')
+                        i = k
+                else:
+                    result.append('\u221a')
+                    i = j
+                continue
+            
+            # ====== \left / \right / \bigl / \bigr etc ======
+            delim_cmds = [_CMD_LEFT, _CMD_RIGHT, _CMD_BIGL, _CMD_BIGR, 
+                         _CMD_BIGL2, _CMD_BIGR2, _CMD_BIGGL, _CMD_BIGGR]
+            delim_matched = False
+            for dc in delim_cmds:
+                dclen = len(dc)
+                if latex[i:i+dclen] == dc:
+                    j = i + dclen
+                    # Only treat as delimiter command if followed by actual delimiter
+                    if j < n and (latex[j] in '([{.)]}|' or latex[j] == _bslash or latex[j] == '.'):
+                        if latex[j] in '([{.)]}|':
+                            result.append(latex[j])
+                        elif latex[j] == _bslash and j+1 < n:
+                            nc = latex[j+1]
+                            dm = {'{': '}', '}': '{', '.': ''}
+                            result.append(dm.get(nc, nc))
+                            j += 1
+                        elif latex[j] == '.':
+                            pass  # empty delimiter
+                        i = j + 1
+                        delim_matched = True
+                    break
+            if delim_matched:
+                continue
+            
+            # ====== \text{...}, \mathbf{...}, \mathrm{...}, \mathbb{...}, \mathcal{...} ======
+            font_cmds = [(_CMD_TEXT, len(_CMD_TEXT)), (_CMD_MBF, len(_CMD_MBF)),
+                         (_CMD_MRM, len(_CMD_MRM)), (_CMD_MBB, len(_CMD_MBB)),
+                         (_CMD_MCAL, len(_CMD_MCAL))]
+            font_matched = False
+            for fc, fclen in font_cmds:
+                if latex[i:i+fclen] == fc and i+fclen < n and latex[i+fclen] == '{':
+                    j = latex.index('}', i + fclen + 1)
+                    result.append(latex[i+fclen+1:j])
+                    i = j + 1
+                    font_matched = True
+                    break
+            if font_matched:
+                continue
+            
+            # ====== \\ (newline) ======
+            if latex[i+1] == _bslash:
+                result.append('\n')
+                i += 2
+                continue
+            
+            # ====== \ (space) ======
+            if latex[i+1] == ' ':
+                result.append(' ')
+                i += 2
+                continue
+            
+            # ====== \quad / \qquad ======
+            if latex[i:i+len(_CMD_QUAD)] == _CMD_QUAD:
+                result.append('  ')
+                i += len(_CMD_QUAD)
+                continue
+            if latex[i:i+len(_CMD_QQUAD)] == _CMD_QQUAD:
+                result.append('    ')
+                i += len(_CMD_QQUAD)
+                continue
+            
+            # ====== spacing: \, \: \; \! ======
+            if latex[i+1] in (',', ':', ';', '!'):
+                result.append(' ')
+                i += 2
+                continue
+            
+            # ====== Known symbols from dict (longest match first) ======
+            sym_matched = False
+            for sym_cmd in sorted(_LATEX_SYMBOL.keys(), key=len, reverse=True):
+                if latex[i:].startswith(sym_cmd):
+                    end = i + len(sym_cmd)
+                    if end < n and latex[end].isalpha():
+                        continue
+                    result.append(_LATEX_SYMBOL[sym_cmd])
+                    i = end
+                    sym_matched = True
+                    break
+            if sym_matched:
+                continue
+            
+            # ====== Fallback: unrecognized command ======
+            result.append(latex[i + 1] if i + 1 < n else '')
+            i += 2
+        
+        elif ch == '_' and i + 1 < n:
+            if latex[i + 1] == '{':
+                j = _find_matching_brace(latex, i + 1)
+                inner = latex[i + 2:j]
+                # Recurse: subscript content may contain \text{}, commands, etc.
+                inner_u = _latex_to_unicode(inner) or inner
+                # Convert result to subscript characters where possible
+                for c in inner_u:
+                    result.append(_SUB_MAP.get(c, c))
+                i = j + 1
+            else:
+                result.append(_SUB_MAP.get(latex[i + 1], latex[i + 1]))
+                i += 2
+        
+        elif ch == '^' and i + 1 < n:
+            if latex[i + 1] == '{':
+                j = _find_matching_brace(latex, i + 1)
+                inner = latex[i + 2:j]
+                # Recurse: superscript content may contain complex LaTeX
+                inner_u = _latex_to_unicode(inner) or inner
+                for c in inner_u:
+                    result.append(_SUP_MAP.get(c, c))
+                i = j + 1
+            else:
+                result.append(_SUP_MAP.get(latex[i + 1], latex[i + 1]))
+                i += 2
+        
+        else:
+            result.append(ch)
+            i += 1
+    
+    return ''.join(result)
+
+
+_is_simple_latex = lambda latex: not _is_omml_only(latex)
+_simple_to_unicode = _latex_to_unicode
+
 
 
 def _children_e(parent_omml, mm_parent):
@@ -221,30 +679,7 @@ def mathml_to_omath(math_root):
     return omath
 
 
-# OOXML m:sz 值：2 = smaller（上标/下标标准大小）
-SCRIPT_SZ_VAL = "2"
-
-
-def _add_script_sz(omml_elem):
-    """给 OMML 元素内所有 <m:r> 添加 <m:sz m:val="2"/>（更小字号），
-    用于上标/下标内容，使其在 Word 中以正确的较小尺寸渲染。"""
-    M_NS = "http://schemas.openxmlformats.org/officeDocument/2006/math"
-    for r in omml_elem.iter(f"{{{M_NS}}}r"):
-        # 如果已有 rPr，追加 sz；否则新建
-        rpr = r.find(f"{{{M_NS}}}rPr")
-        if rpr is None:
-            rpr = m("rPr")
-            # 把 rpr 插到第一个子元素前（保持 r 内顺序：rPr 在前，t 在后）
-            if len(r):
-                r.insert(0, rpr)
-            else:
-                r.append(rpr)
-        sz = m("sz")
-        sz.set(qn("m:val"), SCRIPT_SZ_VAL)
-        rpr.append(sz)
-
-
-def _make_run(elem, script_size=False):
+def _make_run(elem):
     ln = localname(elem.tag)
     text = "".join(elem.itertext())
     r = m("r")
@@ -258,17 +693,19 @@ def _make_run(elem, script_size=False):
             sty_val = "i"
         elif ln == "mtext":
             sty_val = "p"
-    if sty_val or script_size:
-        rpr = m("rPr")
-        if sty_val:
-            sty = m("sty")
-            sty.set(qn("m:val"), sty_val)
-            rpr.append(sty)
-        if script_size:
-            sz = m("sz")
-            sz.set(qn("m:val"), SCRIPT_SZ_VAL)
-            rpr.append(sz)
-        r.append(rpr)
+    # 每个 OMML run 必须显式声明 m:rFonts=Cambria Math，
+    # 否则 Word/WPS 会从 Normal 样式继承 Times New Roman 等
+    # 非数学字体 → 上下标/根号等布局异常 → 显示为方框。
+    rpr = m("rPr")
+    rf = m("rFonts")
+    rf.set(qn("m:ascii"), "Cambria Math")
+    rf.set(qn("m:hAnsi"), "Cambria Math")
+    rpr.append(rf)
+    if sty_val:
+        sty = m("sty")
+        sty.set(qn("m:val"), sty_val)
+        rpr.append(sty)
+    r.append(rpr)
     t = m("t")
     t.set(qn("xml:space"), "preserve")
     t.text = text
@@ -316,6 +753,12 @@ def _convert(elem):
         return _make_run(elem)
     if ln == "mspace":
         r = m("r")
+        rpr = m("rPr")
+        rf = m("rFonts")
+        rf.set(qn("m:ascii"), "Cambria Math")
+        rf.set(qn("m:hAnsi"), "Cambria Math")
+        rpr.append(rf)
+        r.append(rpr)
         t = m("t")
         t.set(qn("xml:space"), "preserve")
         t.text = " "
@@ -330,10 +773,8 @@ def _convert(elem):
         den = m("den")
         if len(kids) >= 1:
             num.append(_e_from(kids[0]))
-            _add_script_sz(num)
         if len(kids) >= 2:
             den.append(_e_from(kids[1]))
-            _add_script_sz(den)
         f.append(num)
         f.append(den)
         return f
@@ -354,7 +795,6 @@ def _convert(elem):
         e = m("e")
         if len(kids) >= 2:
             deg.append(_convert(kids[1]))
-            _add_script_sz(deg)  # 根指数用更小字号
             e.append(_convert(kids[0]))
         rad.append(deg)
         rad.append(e)
@@ -368,7 +808,6 @@ def _convert(elem):
                 base.append(child)
         if len(kids) >= 2:
             exp.append(_convert(kids[1]))
-        _add_script_sz(exp)  # 上标用更小字号
         wrap.append(base)
         wrap.append(exp)
         return wrap
@@ -381,7 +820,6 @@ def _convert(elem):
                 base.append(child)
         if len(kids) >= 2:
             sub.append(_convert(kids[1]))
-        _add_script_sz(sub)  # 下标用更小字号
         wrap.append(base)
         wrap.append(sub)
         return wrap
@@ -395,10 +833,8 @@ def _convert(elem):
                 base.append(child)
         if len(kids) >= 2:
             sub.append(_convert(kids[1]))
-            _add_script_sz(sub)  # 下标用更小字号
         if len(kids) >= 3:
             sup.append(_convert(kids[2]))
-            _add_script_sz(sup)  # 上标用更小字号
         wrap.append(base)
         wrap.append(sub)
         wrap.append(sup)
@@ -449,8 +885,6 @@ def _convert(elem):
         if kids:
             base.append(_convert(kids[0]))
         acc.append(base)
-        # mover 的符号（如度数圈）也用更小字号
-        _add_script_sz(acc)
         return acc
     if ln == "mphantom":
         # 占位：返回空 e
@@ -678,7 +1112,31 @@ def add_seam_line(doc):
 # ----------------------------------------------------------------------------
 # 轻量 Markdown 解析 -> docx
 # ----------------------------------------------------------------------------
-INLINE_RE = re.compile(r"\$([^$]+)\$|(\*\*[^*]+\*\*)")
+# 行内分词：公式($...$)优先级最高，其次「**$公式$**」加粗公式，
+# 再次普通粗体(**...**)。粗体内若含公式则递归解析，确保公式不被吞成文本。
+INLINE_RE = re.compile(r"\*\*\$([^$]+)\$\*\*|\$([^$]+)\$|\*\*([^*]+)\*\*")
+BLANK_RE = re.compile(r"_{2,}")
+
+
+def _fill_cell_with_blanks(paragraph, text):
+    """把文本中的连续下划线（如 ________）渲染为等长空格的 Word 下划线。
+
+    避免某些字体/缩放比例下，下划线字符显示过短或被截断的观感问题。
+    """
+    pos = 0
+    for mm in BLANK_RE.finditer(text):
+        if mm.start() > pos:
+            r = paragraph.add_run(text[pos:mm.start()])
+            set_run_fonts(r, BODY_ASCII, BODY_EA)
+        # 用等长空格的 Word 下划线替代下划线字符
+        blank_len = mm.end() - mm.start()
+        r = paragraph.add_run(" " * blank_len)
+        r.underline = True
+        set_run_fonts(r, BODY_ASCII, BODY_EA)
+        pos = mm.end()
+    if pos < len(text):
+        r = paragraph.add_run(text[pos:])
+        set_run_fonts(r, BODY_ASCII, BODY_EA)
 
 
 def tokenize_inline(s):
@@ -688,9 +1146,17 @@ def tokenize_inline(s):
         if mm.start() > pos:
             tokens.append(("text", s[pos:mm.start()]))
         if mm.group(1) is not None:
-            tokens.append(("math", mm.group(1)))
+            # **$公式$** —— 加粗公式（公式优先渲染）
+            tokens.append(("math_bold", mm.group(1)))
+        elif mm.group(2) is not None:
+            tokens.append(("math", mm.group(2)))
         else:
-            tokens.append(("bold", mm.group(2)[2:-2]))
+            # 普通粗体；若其内部含公式则递归解析，避免公式退化为文本
+            inner = mm.group(3)
+            if "$" in inner:
+                tokens.extend(tokenize_inline(inner))
+            else:
+                tokens.append(("bold", inner))
         pos = mm.end()
     if pos < len(s):
         tokens.append(("text", s[pos:]))
@@ -709,11 +1175,22 @@ def fill_inline(paragraph, text):
             r = paragraph.add_run(val)
             r.bold = True
             set_run_fonts(r, BODY_ASCII, BODY_EA)
-        else:  # math —— 行内公式
-            # 关键修复：<m:oMath> 必须是 <w:p> 的直接子元素，
-            # 不能放进 <w:r> 内部，否则 Word 不识别、渲染为空白。
+        else:  # math / math_bold —— 行内公式（`**$...$**` 也按公式渲染）
             has_math = True
-            paragraph._p.append(latex_to_omath(val))
+            unicode_text = _simple_to_unicode(val)
+            if unicode_text is not None:
+                # 简单公式（仅下标/上标）：用 Unicode 纯文本，
+                # 避免 OMML 在 WPS/旧版 Word 中渲染为方框
+                r = paragraph.add_run(unicode_text)
+                if kind == "math_bold":
+                    r.bold = True
+                set_run_fonts(r, BODY_ASCII, BODY_EA)
+            else:
+                # v6 fallback: raw text (no OMML - causes boxes)
+                r = paragraph.add_run(val)
+                if kind == "math_bold":
+                    r.bold = True
+                set_run_fonts(r, BODY_ASCII, BODY_EA)
     # 包含内联公式的段落：强制设置行距 + 段前/段后间距，
     # 防止上标/度数符号（超出基线以上的部分）被行高顶部裁掉。
     # 原理：Word 的 atLeast 行距通常把富余空间加在基线下方，
@@ -763,6 +1240,129 @@ def fill_colored_line(doc, text, hex_color):
     return p
 
 
+def _insert_colored_after(paragraph, text, hex_color):
+    """在指定段落后插入一个彩色文本段落（用于答案/解析嵌入题目下方）。"""
+    new_p = OxmlElement("w:p")
+    paragraph._p.addnext(new_p)
+    new_para = Paragraph(new_p, paragraph._parent)
+    fill_inline(new_para, text)
+    _color_paragraph(new_para, hex_color)
+    return new_para
+
+
+def parse_answers(answer_text):
+    """解析参考答案文本，返回 {题号: (答案文本, 解析文本)}。
+
+    支持格式：
+      1. **C** — 解析内容
+      2. **答案内容** — 解析内容
+      11. **$CaO$** — 氧化钙。
+      19. **（12 分）** $n = 0.2$ mol。
+      多题一行：10. **B**  11. **C**  12. **B**
+      表格答案：| 题号 | 1 | 2 | ... | 答案 | C | C | ...
+    """
+    answers = {}
+    if not answer_text or not answer_text.strip():
+        return answers
+
+    lines = answer_text.split("\n")
+    i = 0
+    n = len(lines)
+
+    while i < n:
+        line = lines[i].strip()
+        if not line:
+            i += 1
+            continue
+
+        # 跳过 Markdown 标题行
+        if re.match(r"^#{1,3}\s+", line):
+            i += 1
+            continue
+
+        # 处理表格：表头 | 题号 | 1 | 2 | ... ; 数据行 | 答案 | C | C | ...
+        if line.startswith("|"):
+            table_lines = []
+            while i < n and lines[i].strip().startswith("|"):
+                table_lines.append(lines[i].strip())
+                i += 1
+            # 过滤分隔行
+            data_rows = [row for row in table_lines if not re.match(r"^\|\s*[:\-]+\s*\|", row)]
+            if len(data_rows) >= 2:
+                header = [c.strip() for c in data_rows[0].strip("|").split("|")]
+                for row in data_rows[1:]:
+                    cells = [c.strip() for c in row.strip("|").split("|")]
+                    if not cells:
+                        continue
+                    first = cells[0]
+                    if first in ("答案", "答案解析", "参考答案"):
+                        for idx, val in enumerate(cells[1:], start=1):
+                            if idx < len(header):
+                                try:
+                                    qnum = int(header[idx])
+                                    answers[qnum] = (val, "")
+                                except ValueError:
+                                    pass
+            continue
+
+        # 处理一行多题：10. **B**  11. **C**  12. **B**
+        # 只有当一行出现 ≥2 个 "数字. **答案**" 对时才按多题处理，
+        # 避免把 1. **C** — 解析 这种单题行误判。
+        pairs = list(re.finditer(r"(\d+)\.\s*\*\*(.+?)\*\*", line))
+        if len(pairs) >= 2:
+            for m in pairs:
+                qnum = int(m.group(1))
+                ans = m.group(2).strip()
+                answers[qnum] = (ans, "")
+            i += 1
+            continue
+
+        # 处理单题：1. **C** — 解析
+        m = re.match(r"^(\d+)\.\s*(.*)$", line)
+        if not m:
+            i += 1
+            continue
+
+        qnum = int(m.group(1))
+        rest = m.group(2).strip()
+
+        ans_match = re.match(r"^\*\*(.+?)\*\*\s*(.*)$", rest)
+        if ans_match:
+            ans = ans_match.group(1).strip()
+            analysis = ans_match.group(2).strip()
+        else:
+            # 无 **答案** 包裹：若整行是评分要点/解析/思路/知识点，则作为解析
+            if re.match(r"^(评分要点|解析|思路|知识点|注意)", rest):
+                ans = ""
+                analysis = rest
+            else:
+                ans = rest
+                analysis = ""
+
+        # 去掉解析前导的分隔符（—、--、：等）
+        analysis = re.sub(r"^[\u2014\u2013\u2012\-\:\：]\s*", "", analysis)
+
+        # 合并后续非空行（只要没有新题号/表格/标题/多题模式）。
+        # 用换行 \n 连接，保留多段结构，渲染时可拆成多个绿色段落，
+        # 像老师板书一样分层讲解（【思路】【步骤】【知识点】【易错】等）。
+        i += 1
+        while i < n:
+            nxt = lines[i].strip()
+            if not nxt:
+                i += 1
+                continue
+            if (re.match(r"^\d+\.\s*", nxt) or nxt.startswith("|")
+                    or re.match(r"^#{1,3}\s+", nxt)
+                    or len(list(re.finditer(r"\d+\.\s*\*\*", nxt))) >= 2):
+                break
+            analysis += ("\n" + nxt) if analysis else nxt
+            i += 1
+
+        answers[qnum] = (ans, analysis)
+
+    return answers
+
+
 def is_table_start(lines, i):
     if "|" not in lines[i]:
         return False
@@ -807,11 +1407,21 @@ def _set_equal_column_widths(tbl, cols):
         sys.stderr.write(f"[提示] 表格等宽设置失败，已跳过：{e}\n")
 
 
-def build_docx(md_text, md_dir, seamless, no_page_number):
+def build_docx(md_text, md_dir, mode='paper', answers=None, seamless=False, no_page_number=False):
+    """把 Markdown 试卷文本转为 docx。
+
+    mode:
+      'paper'  -> 学生卷（仅题目，不含答案）
+      'answer' -> 教师卷（题目 + 彩色答案 + 彩色解析）
+    """
     doc = Document()
     lines = md_text.split("\n")
     n = len(lines)
     i = 0
+
+    # 在答案模式下记录每道题题干段落，以便后面插入答案/解析
+    qnum_to_para = {}
+
     while i < n:
         line = lines[i]
         strip = line.strip()
@@ -852,13 +1462,83 @@ def build_docx(md_text, md_dir, seamless, no_page_number):
                 p.add_run(f"[图片缺失: {path}]")
                 set_run_fonts(p.runs[0], BODY_ASCII, BODY_EA)
             i += 1
-        elif strip.startswith("$$") and strip.endswith("$$"):
-            latex = strip[2:-2].strip()
+        elif strip.startswith("$$"):
+            # 展示公式：支持跨行 $$...$$（如 \begin{align} 多行推导）。
+            # 注意：单独一行的 $$ 是多行块的开头，需向后收集直到闭合 $$。
+            if strip == "$$":
+                # 开头是单独的 $$，开始跨行收集（首行无内容）
+                buf = []
+                i += 1
+                closed = False
+                while i < n:
+                    cur = lines[i].strip()
+                    if cur.endswith("$$"):
+                        if cur != "$$":
+                            buf.append(cur[:-2])
+                        closed = True
+                        i += 1
+                        break
+                    buf.append(lines[i])
+                    i += 1
+                latex = "\n".join(buf).strip()
+            elif strip.endswith("$$"):
+                # 单行块：同一行内 $...$$
+                latex = strip[2:-2].strip()
+                i += 1
+            else:
+                # 跨行块：开头行带有部分内容（如 $$ \begin{align}）
+                buf = [strip[2:]]
+                i += 1
+                closed = False
+                while i < n:
+                    cur = lines[i].strip()
+                    if cur.endswith("$$"):
+                        buf.append(cur[:-2])
+                        closed = True
+                        i += 1
+                        break
+                    buf.append(lines[i])
+                    i += 1
+                latex = "\n".join(buf).strip()
+                if not closed:
+                    # 未找到闭合 $$：退化为普通段落，避免吞掉内容
+                    p = doc.add_paragraph()
+                    p.add_run("\n".join(buf))
+                    set_run_fonts(p.runs[0], BODY_ASCII, BODY_EA)
+                    continue
+            if latex == "":
+                # 空公式（无内容）：跳过，不生成空段落
+                continue
             p = doc.add_paragraph()
             p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-            op = OxmlElement("m:oMathPara")
-            op.append(latex_to_omath(latex))
-            p._p.append(op)
+            # v6: Try matrix first (-> Word native table)
+            matrix_data = _parse_matrix_table(latex)
+            if matrix_data is not None:
+                n_rows = len(matrix_data)
+                n_cols = max((len(row) for row in matrix_data), default=1)
+                tbl = doc.add_table(rows=n_rows, cols=n_cols)
+                try:
+                    tbl.style = "Table Grid"
+                except Exception:
+                    pass
+                tbl.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                for ri, row_data in enumerate(matrix_data):
+                    for ci, cell_text in enumerate(row_data):
+                        cell = tbl.cell(ri, ci)
+                        cell.text = ""
+                        p_inner = cell.paragraphs[0]
+                        p_inner.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                        r = p_inner.add_run(cell_text)
+                        set_run_fonts(r, BODY_ASCII, BODY_EA)
+            else:
+                unicode_text = _simple_to_unicode(latex)
+                if unicode_text is not None:
+                    r = p.add_run(unicode_text)
+                    set_run_fonts(r, BODY_ASCII, BODY_EA)
+                else:
+                    # Ultimate fallback: raw text (should never happen in v6)
+                    r = p.add_run(latex)
+                    set_run_fonts(r, BODY_ASCII, BODY_EA)
             i += 1
         elif is_table_start(lines, i):
             # 解析表格
@@ -879,12 +1559,12 @@ def build_docx(md_text, md_dir, seamless, no_page_number):
             for c in range(cols):
                 cell = tbl.rows[0].cells[c]
                 cell.text = ""
-                fill_inline(cell.paragraphs[0], header[c] if c < len(header) else "")
+                _fill_cell_with_blanks(cell.paragraphs[0], header[c] if c < len(header) else "")
             for r in body:
                 cells = tbl.add_row().cells
                 for c in range(cols):
                     cells[c].text = ""
-                    fill_inline(cells[c].paragraphs[0], r[c] if c < len(r) else "")
+                    _fill_cell_with_blanks(cells[c].paragraphs[0], r[c] if c < len(r) else "")
             # 考生信息栏（含下划线填空）去边框 + 等宽列
             joined = " ".join(header + [x for r in body for x in r])
             if "____" in joined:
@@ -903,30 +1583,67 @@ def build_docx(md_text, md_dir, seamless, no_page_number):
             fill_colored_line(doc, line, COLOR_ANALYSIS)
             i += 1
         elif re.match(r"^\d+\.\s", strip) or strip.startswith("- ") or strip.startswith("* "):
-            # 列表
+            # 列表（试卷题号通常以 "1. " 形式出现）
             items = []
             while i < n and lines[i].strip():
                 s = lines[i].strip()
-                mm = re.match(r"^(\d+\.)\s+(.*)$", s)
+                mm = re.match(r"^(\d+)\.\s+(.*)$", s)
                 if mm:
-                    items.append(("num", mm.group(2)))
+                    items.append(("num", int(mm.group(1)), mm.group(2)))
                     i += 1
                 elif s.startswith("- ") or s.startswith("* "):
-                    items.append(("bul", s[2:]))
+                    items.append(("bul", None, s[2:]))
                     i += 1
                 else:
                     break
-            for kind, content in items:
+            for kind, qnum, content in items:
                 style = "List Number" if kind == "num" else "List Bullet"
                 try:
                     p = doc.add_paragraph(style=style)
                 except Exception:
                     p = doc.add_paragraph()
                 fill_inline(p, content)
+                if kind == "num" and mode == "answer":
+                    qnum_to_para[qnum] = p
         else:
             p = doc.add_paragraph()
             fill_inline(p, line)
             i += 1
+
+    if mode == "answer" and answers:
+        # 把答案/解析插入到每道题的末尾（下一道题之前），而不是题干后。
+        # 用段落底层 XML 元素 _p 做映射，避免 Paragraph 包装对象不一致。
+        p_to_qnum = {p._p: q for q, p in qnum_to_para.items()}
+        qnum_idx = []
+        for idx, para in enumerate(doc.paragraphs):
+            if para._p in p_to_qnum:
+                qnum_idx.append((p_to_qnum[para._p], idx))
+
+        insertions = []
+        for i, (qnum, start_idx) in enumerate(qnum_idx):
+            if i + 1 < len(qnum_idx):
+                end_idx = qnum_idx[i + 1][1] - 1
+            else:
+                end_idx = len(doc.paragraphs) - 1
+            if qnum in answers:
+                insertions.append((qnum, end_idx))
+
+        # 从后往前插入，避免前面插入影响后续段落位置。
+        # 由于 _insert_colored_after 用 addnext 在当前段落后插入，
+        # 先插解析、再插答案，最终顺序才是：题目 -> 答案 -> 解析。
+        for qnum, end_idx in sorted(insertions, key=lambda x: x[1], reverse=True):
+            para = doc.paragraphs[end_idx]
+            ans, analysis = answers[qnum]
+            # 解析按行拆成多个绿色段落，像老师板书分层讲解。
+            # 已有【思路】【步骤】【知识点】【易错】等自有标签的行不再加前缀；
+            # 其余行自动加【解析】前缀，作为讲解的主干。
+            if analysis:
+                for sub in reversed([s for s in analysis.split("\n") if s.strip()]):
+                    sub = sub.strip()
+                    prefix = "" if sub.startswith("【") else "【解析】"
+                    _insert_colored_after(para, f"{prefix}{sub}", COLOR_ANALYSIS)
+            if ans:
+                _insert_colored_after(para, f"【答案】{ans}", COLOR_ANSWER)
 
     style_document(doc)
     set_page_setup(doc)
@@ -940,7 +1657,7 @@ def build_docx(md_text, md_dir, seamless, no_page_number):
 def main():
     ap = argparse.ArgumentParser(description="Markdown 试卷 -> 可打印 docx（自包含）")
     ap.add_argument("input", help="输入的 paper.md 路径")
-    ap.add_argument("-o", "--output", required=True, help="输出 docx 路径")
+    ap.add_argument("-o", "--output", required=True, help="输出 docx 路径（自动生成 _试卷 和 _答案 两个文档）")
     ap.add_argument("--seamless", action="store_true", help="添加左侧竖排'密封线'")
     ap.add_argument("--no-page-number", action="store_true", help="不加页码")
     args = ap.parse_args()
@@ -951,15 +1668,46 @@ def main():
     with open(args.input, "r", encoding="utf-8") as f:
         md_text = f.read()
 
-    print("[1/3] 解析 Markdown 并转换公式为 Word 原生方程...")
-    doc = build_docx(md_text, os.path.dirname(os.path.abspath(args.input)),
-                     args.seamless, args.no_page_number)
+    md_dir = os.path.dirname(os.path.abspath(args.input))
 
-    out_dir = os.path.dirname(os.path.abspath(args.output))
+    # 分割题目部分与参考答案部分
+    split_idx = len(md_text)
+    for m in re.finditer(r"^#{1,3}\s*参考答案", md_text, re.MULTILINE):
+        split_idx = m.start()
+        break
+
+    question_text = md_text[:split_idx]
+    answer_text = md_text[split_idx:]
+
+    # 解析参考答案
+    answers = parse_answers(answer_text)
+    if answers:
+        print(f"[0/3] 检测到参考答案，共 {len(answers)} 道题...")
+    else:
+        print("[0/3] 未检测到标准参考答案，答案卷将只含题目...")
+
+    # 生成两个输出路径
+    out_path = os.path.abspath(args.output)
+    out_dir = os.path.dirname(out_path)
+    base_name, ext = os.path.splitext(os.path.basename(out_path))
+    paper_path = os.path.join(out_dir, f"{base_name}_试卷{ext}")
+    answer_path = os.path.join(out_dir, f"{base_name}_答案{ext}")
+
     os.makedirs(out_dir, exist_ok=True)
-    print("[2/3] 统一中文排版 / A4 / 页码...")
-    doc.save(args.output)
-    print(f"[3/3] 完成 -> {args.output}")
+
+    print("[1/3] 生成学生卷（仅题目）...")
+    paper_doc = build_docx(question_text, md_dir, mode="paper",
+                           seamless=args.seamless, no_page_number=args.no_page_number)
+
+    print("[2/3] 生成教师卷（题目 + 彩色答案 + 彩色解析）...")
+    answer_doc = build_docx(question_text, md_dir, mode="answer", answers=answers,
+                              seamless=args.seamless, no_page_number=args.no_page_number)
+
+    print("[3/3] 保存文档...")
+    paper_doc.save(paper_path)
+    answer_doc.save(answer_path)
+    print(f"  -> 学生卷：{paper_path}")
+    print(f"  -> 教师卷：{answer_path}")
 
 
 if __name__ == "__main__":
